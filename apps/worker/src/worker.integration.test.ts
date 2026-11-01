@@ -21,6 +21,7 @@ import { Queue, QueueEvents } from "bullmq";
 import { asc, eq } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import { startConsumer } from "./consumer.js";
+import { createEventWriter, dbEventRows } from "./events/event-writer.js";
 import { handleOnboardProject } from "./handlers/onboard-project.js";
 import { handleRunTask } from "./handlers/run-task.js";
 import { createAnswerRouter } from "./onboardings/answer-router.js";
@@ -90,7 +91,10 @@ describe.skipIf(!database || !redis || !probe)(
         db,
         // octocat/Hello-World is public, and GitHub rejects any credentials that aren't valid.
         github: fakeGithubApp("").github,
-        publisher: connect(),
+        events: createEventWriter({
+          store: dbEventRows(db),
+          publisher: connect(),
+        }),
         log: () => {},
         answers: createAnswerRouter(),
         answerTimeoutMs: 60_000,

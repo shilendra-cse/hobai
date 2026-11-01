@@ -17,6 +17,7 @@ import { handleRunTask } from "./handlers/run-task.js";
 import type { Log } from "./lib/log.js";
 import type { SandboxFactory } from "./lib/sandbox-factory.js";
 import { createAnswerRouter } from "./onboardings/answer-router.js";
+import { createEventWriter, dbEventRows } from "./events/event-writer.js";
 import { handleReap } from "./reaper/reap.js";
 import { scheduleReaper } from "./reaper/schedule.js";
 
@@ -66,12 +67,16 @@ export async function startWorker(
     scheduler: connect("scheduler"),
   };
   const queue = new Queue(WORK_QUEUE, { connection: redis.scheduler });
+  const events = createEventWriter({
+    store: dbEventRows(db),
+    publisher: redis.publisher,
+  });
 
   const model = (override: ResolvedModel | undefined) =>
     override ?? resolveModel(config.model);
   const deps = {
     db,
-    publisher: redis.publisher,
+    events,
     log,
     model: model(overrides.taskModel),
     titleModel: model(overrides.titleModel),
@@ -119,6 +124,7 @@ export async function startWorker(
     }),
     async stop() {
       await consumer.close();
+      await events.close();
       await queue.close();
       await Promise.all(Object.values(redis).map((r) => r.quit()));
       await pool.end();

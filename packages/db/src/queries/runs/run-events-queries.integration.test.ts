@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import type { Db } from "../../client.js";
 import { runEvents } from "../../schema/index.js";
@@ -7,6 +7,7 @@ import {
   findRunEventsAfter,
   getLastRunEventSeq,
   insertRunEvent,
+  insertRunEvents,
 } from "./run-events-queries.js";
 
 const database = await testDatabaseOrSkip("run events queries");
@@ -45,6 +46,40 @@ describe.skipIf(!database)("run events queries against Postgres", () => {
     await expect(
       insertRunEvent(db, { runId: run.id, seq: 1, type: "done" }),
     ).rejects.toThrow();
+  });
+
+  it("inserts many runs' events at once, leaving a number already stored as it is", async () => {
+    const { run } = await insertRun(db);
+    const { run: other } = await insertRun(db);
+    await insertRunEvent(db, {
+      runId: run.id,
+      seq: 1,
+      type: "stage_changed",
+      payload: { stage: "prepare" },
+    });
+
+    await insertRunEvents(db, [
+      { runId: run.id, seq: 1, type: "stage_changed", payload: { stage: "x" } },
+      { runId: run.id, seq: 2, type: "done" },
+      { runId: other.id, seq: 1, type: "done" },
+    ]);
+    await insertRunEvents(db, []);
+
+    const stored = await db
+      .select({
+        runId: runEvents.runId,
+        seq: runEvents.seq,
+        payload: runEvents.payload,
+      })
+      .from(runEvents)
+      .where(inArray(runEvents.runId, [run.id, other.id]))
+      .orderBy(asc(runEvents.runId), asc(runEvents.seq));
+    expect(stored).toHaveLength(3);
+    expect(stored).toContainEqual({
+      runId: run.id,
+      seq: 1,
+      payload: { stage: "prepare" },
+    });
   });
 
   it("tells the last stored event number, 0 without events", async () => {
