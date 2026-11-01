@@ -211,7 +211,7 @@ Live stream source and audit log.
 | `payload` | jsonb, default `{}` | |
 | `created_at` | timestamptz | |
 
-Primary key: **(`run_id`, `seq`)**. A run has exactly one writer, so `seq` is gap-free and ordered; SSE resume is `WHERE run_id = $1 AND seq > $lastEventId`. `text_delta` and `agent_step` events are streamed live but **not** persisted. When a run's worker is gone, the reaper becomes its writer and adds `error` and `done` after the last stored event.
+Primary key: **(`run_id`, `seq`)**. A run has exactly one writer, so `seq` is ordered, and gap-free unless a write failed for 60 s and was given up (its events are then missing; later ones keep their numbers); SSE resume is `WHERE run_id = $1 AND seq > $lastEventId`. `text_delta` and `agent_step` events are streamed live but **not** persisted. When a run's worker is gone, the reaper becomes its writer and adds `error` and `done` after the last stored event.
 
 ### `onboardings`
 One environment setup of a project, started from the website ([environment.md](./environment.md) §3.5).
@@ -235,7 +235,7 @@ Indexes:
 - **Partial unique** on (`project_id`) `WHERE status IN ('queued','running','waiting')`: at most one active setup per project, so starting setup twice returns the one already active.
 
 ### `onboarding_events`
-Everything a setup does, in order: the setup's live stream and its record. Same shape and rules as `run_events` (one writer, the worker; `seq` gap-free; resume with `seq > $lastEventId`).
+Everything a setup does, in order: the setup's live stream and its record. Same shape and rules as `run_events` (one writer, the worker; `seq` ordered and gap-free as for runs; resume with `seq > $lastEventId`).
 
 | Column | Type | Notes |
 |---|---|---|

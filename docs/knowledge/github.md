@@ -135,7 +135,7 @@ run-task / onboard-project
 
 - Git reads `GIT_CONFIG_*` as configuration for that command only, so the token never reaches `.git/config`, the remote URL, the command line or the sandbox's environment; the agent's shell can't find it.
 - A token that GitHub refuses fails the run at checkout (`checkout_failed`); a missing, uninstalled or suspended installation fails it before the sandbox is created (`github_access`). Onboarding reports the same through its `done` event.
-- Run events and logs go through `redactGithubTokens`, which keeps a token's prefix (`ghs_***`) and drops the rest, in case git or the agent ever prints one.
+- Run and setup events and logs go through `redactGithubTokens`, which keeps a token's prefix (`ghs_***`) and drops the rest, in case git or the agent ever prints one (e.g. from a file in the repository). The agent's streamed text (`text_delta`) isn't checked: it's never stored, only shown live to the run's owner, and a token would arrive split across many deltas ([worker-capacity.md](./worker-capacity.md) §2.2).
 - **Code**: `apps/worker/src/github/repo-token.ts`, `packages/runner/src/lib/git-auth.ts`.
 
 ## 8. Delivery
