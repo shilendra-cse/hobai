@@ -112,11 +112,15 @@ The cost is the check, not the compaction.
 
 **What happens.** BullMQ keeps a run's job active only while the worker renews its lock; `lockDuration` is 2 minutes and `maxStalledCount: 0` (`consumer.ts`), so a job whose lock lapses is failed, not retried. When the event loop stalls for seconds and Redis commands queue up behind ~1,000 runs' work, some renewals arrive too late. The queue fails the job (`Work failed`); the reaper, every 5 minutes, sees the run `running` in Postgres but not active in the queue and ends it as `worker_lost` (`Failed a lost run`).
 
-**The run doesn't stop.** Nothing aborts the handler, so the worker keeps running a run that's already been failed: CPU spent on dead runs, while the overload that caused it continues.
+**The run doesn't stop.** Nothing aborts the handler, so the worker keeps running a run that's already been failed: CPU spent on dead runs, while the overload that caused it continues. When it finishes it ends itself as usual, so it can still deliver a pull request and send a second `done` after the reaper's `failed`.
 
 **Measured.** At 1,000 runs: 493 jobs failed this way and 490 runs were ended by the reaper, most of them together in minutes 13–15 (the reaper itself was slowed by the overload). Once they were gone the event loop recovered within a minute.
 
-**Fix.** Mainly keep the event loop responsive (bottlenecks 2, 3, 5). Also stop a run's work when its lock is lost (see what BullMQ 6 exposes, e.g. a lock-renewal-failed event), so a failed run doesn't keep using CPU or a sandbox.
+**Fix.** Mainly keep the event loop responsive (bottlenecks 2, 3, 5). And stop the work once its lock is lost (built):
+
+- BullMQ emits `lockRenewalFailed` with the jobs whose lock it couldn't renew. The consumer aborts their work with a `LockLostError` reason (`lib/lock-lost.ts`), the way Stop does.
+- A run or setup stopped that way records nothing: no outcome, no `done`, no delivery. It logs "Stopped a run whose queue lock was lost" and leaves the ending to the reaper, as for a worker that died: `failed`, `worker_lost`, one `done`.
+- The run keeps its sandbox (`keepSandbox` is asked when the run ends), so the reaper saves its diff and parks it, as it does after a crash.
 
 ### 2.7 Bottleneck 7: a run's `done` can be lost (events)
 

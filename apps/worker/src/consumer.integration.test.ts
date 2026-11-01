@@ -5,8 +5,9 @@ import {
   type OnboardingAnswer,
 } from "@hobai/shared";
 import { Queue, QueueEvents, type Job } from "bullmq";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { startConsumer, type Consumer, type Handlers } from "./consumer.js";
+import { LockLostError } from "./lib/lock-lost.js";
 import { createAnswerRouter } from "./onboardings/answer-router.js";
 import { testRedisOrSkip } from "./testing/test-redis.js";
 
@@ -46,7 +47,7 @@ describe.skipIf(!redis)("consumer against Redis", () => {
 
   const answers = createAnswerRouter();
 
-  async function start(handlers: Partial<Handlers>) {
+  async function start(handlers: Partial<Handlers>, lockDurationMs?: number) {
     const consumer = await startConsumer({
       connection: connect(),
       subscriber: connect(),
@@ -55,6 +56,7 @@ describe.skipIf(!redis)("consumer against Redis", () => {
       concurrency: 2,
       log: (level, message) => logs.push({ level, message }),
       prefix,
+      lockDurationMs,
     });
     consumers.push(consumer);
     return consumer;
@@ -217,6 +219,42 @@ describe.skipIf(!redis)("consumer against Redis", () => {
       level: "warn",
       message: "Ignored an answer that couldn't be read",
     });
+  });
+
+  it("stops work whose queue lock was lost, telling it why", async () => {
+    const started = deferred();
+    let reason: unknown;
+    // Locks are renewed every half of their duration, so it fails half a second after the lock goes.
+    await start(
+      {
+        "run-task": (_data, signal) =>
+          new Promise<void>((resolve) => {
+            started.resolve();
+            signal.addEventListener("abort", () => {
+              reason = signal.reason;
+              resolve();
+            });
+          }),
+      },
+      1_000,
+    );
+
+    const job = await queue.add(
+      "run-task",
+      { runId: "lost" },
+      { jobId: "lost" },
+    );
+    await started.promise;
+    await connect().del(`${prefix}:${WORK_QUEUE}:lost:lock`);
+
+    await vi.waitFor(() => expect(reason).toBeInstanceOf(LockLostError), {
+      timeout: 5_000,
+    });
+    expect(logs).toContainEqual({
+      level: "warn",
+      message: "Stopping work whose queue lock was lost",
+    });
+    await job.remove().catch(() => {});
   });
 
   it("waits for work in progress when closing", async () => {

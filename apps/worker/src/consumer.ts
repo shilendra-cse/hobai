@@ -8,6 +8,7 @@ import {
 } from "@hobai/shared";
 import { Worker, type Job } from "bullmq";
 import type { Redis } from "ioredis";
+import { LockLostError } from "./lib/lock-lost.js";
 import type { Log } from "./lib/log.js";
 import type { AnswerRouter } from "./onboardings/answer-router.js";
 
@@ -33,6 +34,8 @@ export type ConsumerOptions = {
   concurrency: number;
   log: Log;
   prefix?: string;
+  /** Default 2 minutes; tests shorten it. */
+  lockDurationMs?: number;
 };
 
 export type Consumer = {
@@ -46,6 +49,8 @@ export async function startConsumer(
   const { handlers, log } = options;
   // Runs and setups in progress, by their id, so Stop can reach either.
   const inProgress = new Map<string, AbortController>();
+  // All work in progress, by queue item, so work whose lock is lost can be stopped.
+  const byJob = new Map<string, AbortController>();
 
   const onMessage = (channel: string, message: string) => {
     if (channel === CANCEL_CHANNEL) {
@@ -69,30 +74,35 @@ export async function startConsumer(
   const handle = async (job: Job) => {
     const item = { name: job.name, data: job.data } as QueuedItem;
     const controller = new AbortController();
+    if (job.id) byJob.set(job.id, controller);
     const started = Date.now();
     log("info", "Work started", { kind: job.name, id: job.id, ...item.data });
-    switch (item.name) {
-      case "run-task":
-        inProgress.set(item.data.runId, controller);
-        try {
-          await handlers["run-task"](item.data, controller.signal);
-        } finally {
-          inProgress.delete(item.data.runId);
-        }
-        break;
-      case "onboard-project":
-        inProgress.set(item.data.onboardingId, controller);
-        try {
-          await handlers["onboard-project"](item.data, controller.signal);
-        } finally {
-          inProgress.delete(item.data.onboardingId);
-        }
-        break;
-      case "reap":
-        await handlers.reap(item.data, controller.signal);
-        break;
-      default:
-        throw new Error(`Unknown work kind "${job.name}".`);
+    try {
+      switch (item.name) {
+        case "run-task":
+          inProgress.set(item.data.runId, controller);
+          try {
+            await handlers["run-task"](item.data, controller.signal);
+          } finally {
+            inProgress.delete(item.data.runId);
+          }
+          break;
+        case "onboard-project":
+          inProgress.set(item.data.onboardingId, controller);
+          try {
+            await handlers["onboard-project"](item.data, controller.signal);
+          } finally {
+            inProgress.delete(item.data.onboardingId);
+          }
+          break;
+        case "reap":
+          await handlers.reap(item.data, controller.signal);
+          break;
+        default:
+          throw new Error(`Unknown work kind "${job.name}".`);
+      }
+    } finally {
+      if (job.id) byJob.delete(job.id);
     }
     log("info", "Work finished", {
       kind: job.name,
@@ -109,7 +119,7 @@ export async function startConsumer(
     maxStalledCount: 0,
     // How long the lock outlives the last renewal: a short Redis outage mustn't look like a dead worker,
     // whose runs the reaper would end while they're still going.
-    lockDuration: 2 * 60_000,
+    lockDuration: options.lockDurationMs ?? 2 * 60_000,
     removeOnComplete: { count: 100 },
     removeOnFail: { count: 1000 },
   });
@@ -120,6 +130,16 @@ export async function startConsumer(
       error: error.message,
     }),
   );
+  // The queue has failed these (`maxStalledCount: 0`) and the reaper will end them, so going on
+  // would only spend CPU, model calls and a sandbox on work that's already over.
+  worker.on("lockRenewalFailed", (jobIds) => {
+    for (const id of jobIds) {
+      const work = byJob.get(id);
+      if (!work || work.signal.aborted) continue;
+      log("warn", "Stopping work whose queue lock was lost", { id });
+      work.abort(new LockLostError());
+    }
+  });
   worker.on("error", (error) =>
     log("error", "Queue error", { error: error.message }),
   );

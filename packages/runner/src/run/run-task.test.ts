@@ -174,6 +174,21 @@ describe("runTask", () => {
     expect(destroyed()).toBe(0);
   });
 
+  it("asks whether to keep the sandbox when the run ends", async () => {
+    for (const keep of [true, false]) {
+      const { sandbox, destroyed } = fakeSandbox();
+      const controller = new AbortController();
+      controller.abort();
+      await runTask(
+        options(sandbox, {
+          signal: controller.signal,
+          keepSandbox: () => keep,
+        }),
+      );
+      expect(destroyed()).toBe(keep ? 0 : 1);
+    }
+  });
+
   it("reports failing checks without changing the agent's status", async () => {
     const { sandbox } = fakeSandbox("npm run test");
     const result = await runTask(options(sandbox));

@@ -105,6 +105,7 @@ Consumes the BullMQ queue `hobai-work` and runs the pipeline in §5. Details and
 - **Concurrency:** `WORKER_CONCURRENCY` items at once per process (default 3), each in its own sandbox; more throughput means more processes.
 - **Cancellation:** a queued run is marked `cancelled` in the database, and the worker skips it. A running one gets a `run-cancel` message carrying its id; every worker process hears it, and the one running it aborts the run's signal.
 - **No retries:** an item whose worker died is failed when BullMQ detects it as stalled, never run again (the agent may already have pushed or spent money). A worker renews its items' locks while it works; a lock lasts 2 minutes, so a short Redis outage doesn't look like a dead worker.
+- **Lock lost:** a worker too far behind to renew a lock in time is told so (`lockRenewalFailed`) and stops that work at once, recording nothing and keeping the sandbox; the queue has already failed the item, and the reaper ends the run or setup as below ([worker-capacity.md](./worker-capacity.md) §2.6).
 - **Reaper:** a `reap` work item, every 5 minutes (one BullMQ job scheduler shared by all workers) and at startup. It fails runs nothing will finish: `running` with no active queue item (`worker_lost`), or `queued` for over 15 minutes with the item gone (`lost_in_queue`), adding `error` + `done` events. For a `worker_lost` run it first saves the diff from its sandbox and parks the sandbox (Daytona: stopped, kept 4 h for a future resume; E2B and Docker: deleted).
 - **Shutdown:** the first SIGINT/SIGTERM stops taking work and waits for the work in progress. Repeated SIGTERMs are ignored (a deploy's hard stop is Docker's SIGKILL at the end of the grace period, §10); only a second Ctrl-C, a second or more later, exits at once and leaves the rest to the reaper. An unhandled promise rejection is logged, not fatal, so one stray error doesn't end every run in progress.
 - **Health:** `GET /health` on `WORKER_HEALTH_PORT` (default 4100, inside the container only) answers 200 while Postgres and Redis answer.
@@ -236,6 +237,7 @@ Removed from server: `WORKSPACES_ROOT`, `lib/workspaces.ts`, OAuth-token GitHub 
 
 | Failure | Handling |
 |---|---|
+| Worker too slow to renew a lock | It stops the run at once, records nothing and keeps the sandbox; the reaper ends it as for a crash (next row). |
 | Worker crash mid-run | The item is failed when BullMQ detects it as stalled (its lock ran out: up to 2 minutes; `maxStalledCount: 0`, never retried). Within 5 minutes (or at the next worker start) the reaper saves the run's diff, parks its sandbox and fails the run with `worker_lost`. E2B and Docker sandboxes are deleted when parked; Daytona deletes a parked sandbox after `SANDBOX_RETENTION_HOURS`. |
 | Sandbox create fails | Retry with backoff (nothing has happened yet). |
 | Dependency install fails | Continue; agent is told setup failed and may fix it. |
