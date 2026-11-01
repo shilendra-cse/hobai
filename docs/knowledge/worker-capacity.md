@@ -21,7 +21,7 @@ Numbered in the order they were found; §5 has which ones the baseline hit.
 | 1 | ~~Step request bodies pile up~~ **Ruled out** | memory | The kept requests point at strings already in memory; they don't copy them | None needed |
 | 2 | `text_delta` handled per token | CPU | The sink does full work for every text token | Batch deltas |
 | 3 | One INSERT per stored event | Postgres pool | 20 connections, a round trip each | One multi-row INSERT for all runs |
-| 4 | Old tool results kept in full | memory, linear | Compaction shrinks only what's sent | Store the compacted form |
+| 4 | Old tool results kept in full | memory, linear | Compaction shrinks only what's sent | **Deferred**: needs a new `streamText` call at each compaction (§2.4) |
 | 5 | Compactor check every step | CPU | Stringify and rebuild the whole conversation each step | Use reported usage; keep the view |
 | 6 | Late lock renewals fail healthy runs | queue | A frozen event loop misses the 2-min lock; the run is failed but keeps running | Fix 2, 3, 5; stop a run's work when its lock is lost |
 | 7 | A run's `done` can be lost | events | Part of 3: `done` is dropped like any event whose INSERT times out; a watched run looks unfinished | Fixed with 3: events are retried, not dropped |
@@ -90,7 +90,13 @@ Numbered in the order they were found; §5 has which ones the baseline hit.
 
 **Measured.** Less than estimated: ~1.8 MB of heap per active run on the mixed profile, 1.9 GB at 1,000 runs (§5). It doesn't run out first, but near the limit GC took up to ~90% of a second, which feeds the event-loop stalls of §2.6.
 
-**Fix.** Once a step is compacted, replace its tool results in `state.messages` too. The tool calls stay; only the results compaction already removed go. The model sees exactly what it sees today, and each run's memory stays at about the compaction size however long it runs.
+**Fix, deferred.** Replacing the results in `state.messages` isn't enough: almost a whole run is one `streamText` call, and the SDK keeps every step's output for the length of the call.
+
+- **v5 (installed, 5.0.282):** each step's input is rebuilt from the originals (`[...initialMessages, ...responseMessages]`); the messages `prepareStep` returns are used for that call only, and `responseMessages` and `recordedSteps` keep growing.
+- **v7 (latest, 7.0.159):** the messages `prepareStep` returns carry into the next step, but each step's result, with a copy of its messages, still goes into `recordedSteps`, cleared only when the call ends.
+- The SDK's own compaction (`prepareStep`, `pruneMessages`) controls what the model sees, not what's kept.
+
+So the fix would be to end the call when compaction moves forward and start a new one from the compacted messages: the model would get exactly the same messages. Deferred because memory isn't the limit (§5: ~1.8 MB per active run); worth doing if a load run shows heap or GC time as the problem.
 
 ### 2.5 Bottleneck 5: compactor check every step (CPU)
 
@@ -215,7 +221,7 @@ pnpm --filter @hobai/worker load --runs 100,250,500,1000 --profile mixed --max-h
 2. Bottleneck 3, with 7: one event writer that retries instead of dropping.
 3. Bottleneck 5: the compactor check.
 4. Bottleneck 6: stop a run's work when its lock is lost.
-5. Bottleneck 4: store the compacted form.
+5. ~~Bottleneck 4: store the compacted form.~~ Deferred (§2.4).
 6. The settings in §3: two processes, heap size, `WORKER_CONCURRENCY`.
 
 Each fix is measured against this baseline with the same command.
