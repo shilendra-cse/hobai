@@ -8,7 +8,7 @@ All numbers are estimates until the load harness (§4) measures them.
 
 ## 1. Where we are
 
-- **About 20–40 runs per worker today.** Memory runs out first (bottleneck 1).
+- **Today's limit isn't known.** Bottleneck 1 turned out not to be real (§2.1), so a run's memory is roughly its conversation: a few MB typically, tens of MB for long runs with large outputs. That puts the memory limit at a few hundred runs, about where bottleneck 2 is too. The load harness (§4) will tell which comes first.
 - **Node uses one core.** JavaScript runs on a single event loop; one process can't use the second vCPU.
 - **The heap stops at ~2.2 GB.** V8 sets its limit from the machine's RAM (`v8.getHeapStatistics().heap_size_limit` is 2,240 MB on an 8 GB machine). The Dockerfile doesn't set `--max-old-space-size`, so the worker crashes with "JavaScript heap out of memory" while ~5 GB of RAM is unused.
 
@@ -18,28 +18,21 @@ In the order they're hit as concurrency goes up.
 
 | # | Bottleneck | Kind | Cause | Fix |
 |---|---|---|---|---|
-| 1 | Step request bodies pile up | memory, quadratic | The SDK keeps every step's full request | Don't keep them |
+| 1 | ~~Step request bodies pile up~~ **Ruled out** | memory | The kept requests point at strings already in memory; they don't copy them | None needed |
 | 2 | `text_delta` handled per token | CPU | The sink does full work for every text token | Batch deltas |
 | 3 | One INSERT per stored event | Postgres pool | 20 connections, a round trip each | One multi-row INSERT for all runs |
 | 4 | Old tool results kept in full | memory, linear | Compaction shrinks only what's sent | Store the compacted form |
 | 5 | Compactor check every step | CPU | Stringify and rebuild the whole conversation each step | Use reported usage; keep the view |
 
-### 2.1 Bottleneck 1: step request bodies pile up (memory)
+### 2.1 Bottleneck 1: step request bodies pile up (ruled out)
 
-**What happens.** Each step, the SDK serializes the whole conversation into a request body and sends it. `streamText` keeps every step's result, including `request.body`, in `recordedSteps` until the call ends (`ai/dist/index.mjs`, `DefaultStepResult`; `@ai-sdk/openai` returns `request: { body }`). One call in `runSegment` can take up to `maxSteps` (150) steps.
+**What was assumed.** `streamText` keeps every step's result, including `request.body`, in `recordedSteps` until the call ends (`ai/dist/index.mjs`, `DefaultStepResult`; `@ai-sdk/openai` returns `request: { body: args }`). Counting each kept request at its size as sent (~10 KB added per step → ~50 MB after 100 steps), that looked quadratic.
 
-**Why it's quadratic.** Every step adds one more full copy, slightly bigger than the last. With ~10 KB added per step:
+**What actually happens.** The kept `body` is the request **object**, not the JSON text sent over the network; serializing happens at send time, on a temporary string that's thrown away. The object holds **references** to strings already in memory, not copies. Our tools all return strings, and the provider passes a `"text"` tool output through as the same string (`function_call_output`, `contentValue = output.value`), so every kept request points at the same tool results.
 
-| Step | That step's request | Total kept |
-|---|---|---|
-| 1 | 10 KB | 10 KB |
-| 2 | 20 KB | 30 KB |
-| 3 | 30 KB | 60 KB |
-| 100 | 1,000 KB | **≈ 50 MB** |
+**Measured.** 150 fake steps with 10 KB tool results: counting by size predicts 113 MB; dropping all kept requests freed **1.4 MB**. With 50 KB results it still freed 1.4 MB: bigger results don't make the kept requests bigger.
 
-The conversation itself is 1 MB; the copies are ~50× that. Nothing reads them.
-
-**Fix.** A model middleware (`wrapLanguageModel`) that drops `request.body` from each step's result.
+**One part does get copied.** The provider rebuilds tool-call **arguments** on every step (`arguments: JSON.stringify(part.input)`), so each kept request has its own copy of every earlier call's arguments. Mostly tiny (`read_file("src/date.ts")`), but `write_file` and `edit_file` carry file contents: e.g. 10 writes of 10 KB, kept across ~100 later steps, ≈ 10 MB for that run. Small, and only for runs that write a lot; counted under §2.4. A tool returning an object instead of a string would also be copied every step (`"json"` outputs are `JSON.stringify`'d per request), so tools should keep returning strings.
 
 ### 2.2 Bottleneck 2: `text_delta` handled per token (CPU)
 
@@ -79,7 +72,7 @@ The conversation itself is 1 MB; the copies are ~50× that. Nothing reads them.
 
 **What compaction does.** Before each model call, `Compactor.apply` (`compaction.ts`) checks the size; over 60% of the 272k-token window, it builds a compacted **copy** where old tool results become one line (`"[read src/date.ts, output removed]"`) and sends that. The copy is never written back: `state.messages` keeps every old result in full, though the model never gets them again.
 
-**Why it matters after fix 1.** Memory per run still grows with every step, linearly: ~1–2 MB of text for a typical run, tens of MB with large logs or files; ~3–5 GB or more at 1,000 runs. A large live heap also lengthens GC pauses, which stop the single thread.
+**Why it matters.** This is the memory that actually grows: per run, with every step, linearly (plus the tool-call argument copies from §2.1): ~1–2 MB of text for a typical run, tens of MB with large logs or files; ~3–5 GB or more at 1,000 runs. A large live heap also lengthens GC pauses, which stop the single thread.
 
 **Fix.** Once a step is compacted, replace its tool results in `state.messages` too. The tool calls stay; only the results compaction already removed go. The model sees exactly what it sees today, and each run's memory stays at about the compaction size however long it runs.
 
@@ -118,4 +111,4 @@ With two processes (2 cores), 1,000 runs fit when conversations are small and si
 
 ## 4. Measuring
 
-A local load harness, without Daytona or OpenAI: the fake sandbox with realistic delays and a scripted model that streams at real token speed (~70 a second), ramping 100, 250, 500 and 1,000 runs. Recorded per level: heap and RSS, event-loop lag, CPU, database pool waits, time to save events. Run before the fixes for a baseline and after each one, so every estimate on this page becomes a number.
+A local load harness, without Daytona or OpenAI: the fake sandbox with realistic delays and a scripted model that streams at real token speed (~70 a second), ramping 100, 250, 500 and 1,000 runs. Recorded per level: heap and RSS, event-loop lag, CPU, database pool waits, time to save events. Run before the fixes for a baseline and after each one, so every estimate on this page becomes a number. The model has to be the real `@ai-sdk/openai` provider pointed at a fake OpenAI server (`OPENAI_BASE_URL`), not a mock model: the provider's per-token parsing and per-step serialization are part of what's measured.
