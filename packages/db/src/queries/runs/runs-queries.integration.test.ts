@@ -7,6 +7,7 @@ import { saveRunDiff } from "./run-diffs-queries.js";
 import {
   findUserRun,
   getRunWithProject,
+  listEndedRuns,
   listUnfinishedRuns,
   markRunEnded,
   markRunStarted,
@@ -93,6 +94,19 @@ describe.skipIf(!database)("runs queries against Postgres", () => {
 
     expect(ids).toEqual(expect.arrayContaining([queued.id, running.id]));
     expect(ids).not.toContain(done.id);
+  });
+
+  it("lists which of the given runs have ended", async () => {
+    const queued = (await insertRun(db)).run;
+    const ended = (await insertRun(db)).run;
+    const other = (await insertRun(db)).run;
+    await markRunEnded(db, ended.id, { status: "succeeded" }, ["queued"]);
+    await markRunEnded(db, other.id, { status: "failed" }, ["queued"]);
+
+    expect(await listEndedRuns(db, [queued.id, ended.id])).toEqual([
+      { id: ended.id, status: "succeeded", finishedAt: expect.any(Date) },
+    ]);
+    expect(await listEndedRuns(db, [])).toEqual([]);
   });
 
   it("gets a run with its changed files, only for the owner of its project", async () => {

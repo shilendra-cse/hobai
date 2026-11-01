@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { createTaskWithRun, findRunEventsAfter, type Db } from "@hobai/db";
+import {
+  createTaskWithRun,
+  findRunEventsAfter,
+  listEndedRuns,
+  type Db,
+} from "@hobai/db";
 import { DEFAULT_AGENT_MODEL, WORK_QUEUE } from "@hobai/shared";
 import { QueueEvents, type Queue } from "bullmq";
 import type { Redis } from "ioredis";
@@ -12,6 +17,10 @@ import { loadTask } from "./profiles.js";
 // A worker this far behind is stalled: its queue locks (2 minutes) would soon run out.
 const STALLED_LOOP_MS = 30_000;
 const MAX_EVENTS_PER_RUN = 100_000;
+// A run ended in Postgres this long ago without a `done` heard has lost it. A `done` that still
+// comes (the reaper ends a run before sending it) clears that.
+const DONE_GRACE_MS = 10_000;
+const ENDED_CHECK_SECONDS = 30;
 
 export type LevelOptions = {
   runs: number;
@@ -52,6 +61,8 @@ export type LevelResult = {
   events: { total: number; lagMs: { p50: number; p99: number; max: number } };
   /** Stored events that never reached a subscriber. */
   unpublished: number;
+  /** Runs ended in Postgres whose `done` was never published. */
+  doneLost: number;
   warnings: Record<string, number>;
 };
 
@@ -71,6 +82,7 @@ type Tracked = {
   startedAt?: number;
   doneAt?: number;
   status?: string;
+  doneLost?: boolean;
   published: number;
 };
 
@@ -118,6 +130,7 @@ export async function runLevel(options: LevelOptions): Promise<LevelResult> {
     if (event.type === "done") {
       run.doneAt = now;
       run.status = event.status ?? "unknown";
+      run.doneLost = false;
     }
   };
   const subscriber = options.connect();
@@ -167,6 +180,24 @@ export async function runLevel(options: LevelOptions): Promise<LevelResult> {
     ),
   );
 
+  // Without this a level whose `done` events were lost would only stop at its timeout.
+  const markEnded = async (graceMs: number) => {
+    const waiting = [...tracked].filter(([, run]) => run.doneAt === undefined);
+    const ended = await listEndedRuns(
+      options.db,
+      waiting.map(([runId]) => runId),
+    );
+    for (const { id, status, finishedAt } of ended) {
+      const run = tracked.get(id);
+      if (!run || run.doneAt !== undefined || !finishedAt) continue;
+      if (Date.now() - finishedAt.getTime() < graceMs) continue;
+      run.doneAt = finishedAt.getTime();
+      run.status = status;
+      run.doneLost = true;
+    }
+  };
+  let checkingEnded = false;
+
   const samples: LevelSample[] = [];
   const stopReason = await new Promise<StopReason>((resolve) => {
     const tick = setInterval(() => {
@@ -191,6 +222,15 @@ export async function runLevel(options: LevelOptions): Promise<LevelResult> {
       secondEvents = 0;
       secondLag.reset();
       samples.push(sample);
+      if (sample.second % ENDED_CHECK_SECONDS === 0 && !checkingEnded) {
+        checkingEnded = true;
+        // A failed check is tried again on the next one.
+        void markEnded(DONE_GRACE_MS)
+          .catch(() => {})
+          .finally(() => {
+            checkingEnded = false;
+          });
+      }
       options.onSample(sample);
 
       const stop = (reason: StopReason) => {
@@ -211,6 +251,8 @@ export async function runLevel(options: LevelOptions): Promise<LevelResult> {
   await queueEvents.close();
   await subscriber.quit();
   await options.queue.obliterate({ force: true });
+  // The worker is gone, so no `done` is still on its way.
+  await markEnded(0);
 
   let unpublished = 0;
   for (const [runId, run] of tracked) {
@@ -223,6 +265,7 @@ export async function runLevel(options: LevelOptions): Promise<LevelResult> {
     unpublished += Math.max(0, stored.length - run.published);
   }
 
+  const doneLost = [...tracked.values()].filter((run) => run.doneLost).length;
   const runDurations = new Histogram();
   const statuses: Record<string, number> = {};
   for (const runId of ids) {
@@ -249,6 +292,7 @@ export async function runLevel(options: LevelOptions): Promise<LevelResult> {
       lagMs: { p50: lag.percentile(50), p99: lag.percentile(99), max: lag.max },
     },
     unpublished,
+    doneLost,
     warnings,
   };
 }

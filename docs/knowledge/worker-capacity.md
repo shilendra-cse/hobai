@@ -24,7 +24,7 @@ Numbered in the order they were found; §5 has which ones the baseline hit.
 | 4 | Old tool results kept in full | memory, linear | Compaction shrinks only what's sent | Store the compacted form |
 | 5 | Compactor check every step | CPU | Stringify and rebuild the whole conversation each step | Use reported usage; keep the view |
 | 6 | Late lock renewals fail healthy runs | queue | A frozen event loop misses the 2-min lock; the run is failed but keeps running | Fix 2, 3, 5; stop a run's work when its lock is lost |
-| 7 | Runs that never end | hang | 17 runs waited on something that never answered | Find the missing timeout |
+| 7 | A run's `done` can be lost | events | Part of 3: `done` is dropped like any event whose INSERT times out; a watched run looks unfinished | Fix 3 so events are retried, not dropped |
 
 ### 2.1 Bottleneck 1: step request bodies pile up (ruled out)
 
@@ -110,13 +110,20 @@ The cost is the check, not the compaction.
 
 **Fix.** Mainly keep the event loop responsive (bottlenecks 2, 3, 5). Also stop a run's work when its lock is lost (see what BullMQ 6 exposes, e.g. a lock-renewal-failed event), so a failed run doesn't keep using CPU or a sandbox.
 
-### 2.7 Bottleneck 7: runs that never end (hang)
+### 2.7 Bottleneck 7: a run's `done` can be lost (events)
 
-**Measured.** At 1,000 runs, 17 runs stayed active for the last ~18 minutes of the level with the worker at ~2% CPU, until the level timed out: waiting on something that never answered. The fake OpenAI server closed a few connections while the worker was stalled (`Cannot connect to API: other side closed` in the log), so a model request without a time limit is the first suspect; not confirmed.
+**What was seen.** At 1,000 runs, 17 runs never reported an end; the level ran to its timeout. They looked stuck.
 
-**Why it matters.** In production a run that never ends holds a concurrency slot and a sandbox until the 45-minute run limit, if that limit covers where it's stuck.
+**What happened.** They had ended. The harness counts a run as ended when it hears its `done` event, and those `done`s were never sent: `done` goes through the sink like any stored event (INSERT, then publish), and an INSERT that waits over 2 s for a connection is dropped with the event (§2.3). The last runs ended in minutes 13–15, with ~800 queries waiting. What shows it:
 
-**Fix.** Find what they wait on (a run's last events, or a heap snapshot of a stuck worker), then add the missing timeout.
+- The worker held nothing: heap 69–70 MB for the last 17 minutes, what an idle worker holds at the start of a level, at ~2% CPU, with no events and no queries waiting.
+- A run that really hung would have been stopped by `RUN_TIME_LIMIT_MS` (45 minutes, `packages/runner/src/run/run-task.ts`), which aborts the model request too; these runs started in the first 30 s, so before the level's 50-minute timeout.
+
+The run's row is ended either way: `markRunEnded` is its own query, after the events.
+
+**Why it matters.** Someone watching the run sees "Working" until they reload the page. Losing any event leaves a hole in the timeline; losing `done` leaves the run looking unfinished.
+
+**Fix.** Part of bottleneck 3: the event writer retries a write that fails instead of dropping its events. The harness now checks Postgres for runs whose `done` it didn't hear and reports them as "Ended, `done` lost", so lost events can't pass for hung runs again.
 
 ## 3. What's left after the fixes
 
@@ -168,7 +175,7 @@ pnpm --filter @hobai/worker load --runs 100,250,500,1000 --profile mixed --max-h
 | | 100 runs | 250 runs | 500 runs | 1,000 runs |
 |---|---|---|---|---|
 | Stopped | finished | finished | finished | timed out (50 min) |
-| Outcomes | succeeded 100 | succeeded 250 | succeeded 500 | failed 492, succeeded 456, incomplete 35, unfinished 17 |
+| Outcomes | succeeded 100 | succeeded 250 | succeeded 500 | failed 492, succeeded 456, incomplete 35, unfinished 17 (ended, `done` lost, §2.7) |
 | Run time p50 / p99 | 361 / 1,607 s | 372 / 1,627 s | 371 / 1,513 s | 1,214 / 1,911 s |
 | Heap peak (limit 2,432 MB) | 370 MB | 705 MB | 982 MB | 1,902 MB |
 | RSS peak | 695 MB | 1,275 MB | 1,836 MB | 2,682 MB |
@@ -188,7 +195,7 @@ pnpm --filter @hobai/worker load --runs 100,250,500,1000 --profile mixed --max-h
 5. **Events are lost.** Queries waiting over 2 s for a connection throw (§2.3): 533 runs have gaps in their timelines.
 6. **Long runs weigh on the end.** ~200 long runs left after minute 16 still held the loop ~2 s at a time (§2.5).
 7. **35 incomplete** runs hit a limit, most likely the time limit, as everything ran ~3× slower.
-8. **17 runs never ended** (§2.7).
+8. **17 runs looked unfinished**, but had ended: their `done` was lost (§2.7).
 
 `A lost run's work couldn't be kept` (490) comes from the harness: the reaper can't take a diff from a `LoadSandbox`. Ignore it.
 
@@ -196,10 +203,11 @@ pnpm --filter @hobai/worker load --runs 100,250,500,1000 --profile mixed --max-h
 
 **Order of work.**
 
-1. A CPU profile of the worker at 500 runs, to split the event-loop time between bottlenecks 2, 3 and 5 before fixing any of them.
-2. Bottleneck 7: find what the stuck runs wait on. It matters at any concurrency.
-3. Bottlenecks 2, 3 and 5, in the order the profile gives.
+1. Bottleneck 2: batch `text_delta`.
+2. Bottleneck 3, with 7: one event writer that retries instead of dropping.
+3. Bottleneck 5: the compactor check.
 4. Bottleneck 6: stop a run's work when its lock is lost.
-5. Bottleneck 4 and the settings in §3 (two processes, heap size, `WORKER_CONCURRENCY`).
+5. Bottleneck 4: store the compacted form.
+6. The settings in §3: two processes, heap size, `WORKER_CONCURRENCY`.
 
 Each fix is measured against this baseline with the same command.

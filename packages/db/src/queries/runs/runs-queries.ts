@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Db } from "../../client.js";
 import { projects } from "../../schema/projects/projects-schema.js";
 import { runs } from "../../schema/runs/runs-schema.js";
@@ -80,6 +80,14 @@ export async function listUnfinishedRuns(db: Db) {
     })
     .from(runs)
     .where(inArray(runs.status, ["queued", "running"]));
+}
+
+export async function listEndedRuns(db: Db, runIds: string[]) {
+  if (runIds.length === 0) return [];
+  return db
+    .select({ id: runs.id, status: runs.status, finishedAt: runs.finishedAt })
+    .from(runs)
+    .where(and(inArray(runs.id, runIds), isNotNull(runs.finishedAt)));
 }
 
 export async function findUserRun(db: Db, userId: string, runId: string) {
