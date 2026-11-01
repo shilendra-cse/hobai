@@ -129,6 +129,7 @@ Every step resends the whole conversation. Long tasks would overflow the context
 - **Trigger:** estimated prompt size (characters ÷ 4) above **60%** of the model's context window.
 - **Action:** in one batch, replace the content of old tool results with a one-line note (`[Output of read_file src/app.ts removed to save context (9,031 characters). Run the tool again if you need it.]`) until the prompt is under **40%**. Kept: the task, every tool **call**, the model's own text, and the last **10** steps in full (fewer, down to 3, if those steps are huge).
 - **Watermark:** the cut-off is remembered and only moves at the next compaction. Between compactions every request starts with an identical prefix, so the provider's prompt cache keeps hitting. Compaction costs one cache miss each time it runs, which is rarely.
+- **Cost of the check:** it runs before every step, so it doesn't re-read the conversation: each message is measured, and compacted, once, and a running total gives the size ([worker-capacity.md](./worker-capacity.md) §2.5).
 - No LLM summarization: replacing results is free, deterministic and testable, and the agent can re-read anything it needs.
 
 ## 7. Models

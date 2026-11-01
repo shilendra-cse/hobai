@@ -104,7 +104,7 @@ The cost is the check, not the compaction.
 
 **The math.** With conversations up to ~650 KB (60% of the window), ~1–3 ms per full pass; ~100–300 steps a second at 1,000 runs.
 
-**Fix.** Count tokens from the input tokens OpenAI reported for the last step, plus an estimate for what was added since; keep the compacted view between steps and append to it, rebuilding only when compaction moves forward. Behaviour doesn't change.
+**Fix (built).** The conversation only grows at its end, so the `Compactor` measures each message once and keeps a running total (the length of the whole array is the messages' lengths plus brackets and commas), and builds each compacted message once, when the watermark moves past it; a step's view is the kept compacted part plus the messages after it. A step costs the 1–2 messages it added, not the whole conversation; the rare compaction reuses the same lengths for its `keep` loop. The counts are exactly the old ones, so it compacts on the same step, at the same cut-off, with identical messages: a test checks that against the old algorithm over 150 steps. Using the input tokens OpenAI reports was the other option; it would change when compaction happens. What's left per step is the SDK's own pass over the conversation (§3).
 
 **Measured.** Once the short runs of the 1,000 level were done, ~200 long runs near the compaction size still held the event loop up to ~2 s at a time (§5).
 
