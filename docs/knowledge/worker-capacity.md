@@ -103,7 +103,7 @@ The SDK's own work, which we can't remove while we stream and re-send the conver
 With two processes (2 cores), 1,000 runs fit when conversations are small and sit at the limit when many long runs are near the compaction ceiling. **How much is re-sent each step decides it.** Two options, both changing cost and what the model sees, to decide together:
 
 - **A lower compaction target** (e.g. 30% instead of 60%): every pass is smaller, memory per run is smaller, and each step costs less at OpenAI.
-- **Keep the conversation at OpenAI** (Responses API, `previous_response_id`): each step sends only what's new, and the per-step row drops to near zero. Compaction would have to work differently.
+- **Keep the conversation at OpenAI** (Responses API, `previous_response_id`): each step sends only what's new, and the per-step row drops to near zero. Compaction would have to work differently. Part of this already happens: with `store` on (OpenAI's default), the provider sends earlier assistant output (reasoning, messages, tool calls) as `item_reference`s, not in full (seen in the recorded requests, `packages/agent/src/testing/fake-openai/recorded/`). What's re-sent in full every step is the user's message and every tool result, which is most of the conversation.
 
 **Settings that go with the fixes:** two worker processes (one per core), `--max-old-space-size` per process (e.g. ~2.5 GB each), and `WORKER_CONCURRENCY` raised to what's measured.
 
