@@ -16,11 +16,8 @@ import type {
   QueuedWork,
   RunEvent,
 } from "@hobai/shared";
-import {
-  createEventSink,
-  onboardingEventTarget,
-  type Publisher,
-} from "../events/sink.js";
+import type { EventWriter } from "../events/event-writer.js";
+import { createEventSink, onboardingEventTarget } from "../events/sink.js";
 import { GithubAccessError, repoReadToken } from "../github/repo-token.js";
 import type { Log } from "../lib/log.js";
 import type { SandboxFactory } from "../lib/sandbox-factory.js";
@@ -49,7 +46,7 @@ const NO_ANSWER = (minutes: number): EndedOnboarding => ({
 
 export type OnboardProjectDeps = {
   db: Db;
-  publisher: Publisher;
+  events: EventWriter;
   log: Log;
   createSandbox: SandboxFactory;
   github: Pick<GithubApp, "repoToken">;
@@ -82,7 +79,7 @@ export async function handleOnboardProject(
 
   const sink = createEventSink<RunEvent | OnboardingEventBody>(
     deps,
-    onboardingEventTarget(db, onboardingId),
+    onboardingEventTarget(onboardingId),
   );
   const now = () => new Date().toISOString();
   const done = (

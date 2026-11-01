@@ -12,7 +12,11 @@ import { WORK_QUEUE, type OnboardingEvent } from "@hobai/shared";
 import { Queue, Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
-import type { Publisher } from "../events/sink.js";
+import {
+  createEventWriter,
+  dbEventRows,
+  type Publisher,
+} from "../events/event-writer.js";
 import { testRedisOrSkip } from "../testing/test-redis.js";
 import { failLostOnboardings } from "./lost-onboardings.js";
 import { QUEUED_GRACE_MS } from "./lost-runs.js";
@@ -36,7 +40,12 @@ describe.skipIf(!database || !redis)(
         return 1;
       },
     };
-    const deps = { db, queue, publisher, log: () => {} };
+    const deps = {
+      db,
+      queue,
+      events: createEventWriter({ store: dbEventRows(db), publisher }),
+      log: () => {},
+    };
 
     afterAll(async () => {
       await queue.close();

@@ -9,7 +9,11 @@ import { FakeSandbox } from "@hobai/sandbox/testing";
 import { WORK_QUEUE, type RunEvent } from "@hobai/shared";
 import { Queue, Worker } from "bullmq";
 import { afterAll, describe, expect, it } from "vitest";
-import type { Publisher } from "../events/sink.js";
+import {
+  createEventWriter,
+  dbEventRows,
+  type Publisher,
+} from "../events/event-writer.js";
 import { testRedisOrSkip } from "../testing/test-redis.js";
 import { failLostRuns, QUEUED_GRACE_MS } from "./lost-runs.js";
 
@@ -32,7 +36,7 @@ describe.skipIf(!database || !redis)(
     const deps = {
       db,
       queue,
-      publisher,
+      events: createEventWriter({ store: dbEventRows(db), publisher }),
       log: () => {},
       connectSandbox: async () => null,
     };

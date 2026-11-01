@@ -205,6 +205,15 @@ export async function insertOnboardingEvent(db: Db, event: NewOnboardingEvent) {
   await db.insert(onboardingEvents).values(event);
 }
 
+/** A row already stored (same setup and number) is left as it is, so a write can be retried. */
+export async function insertOnboardingEvents(
+  db: Db,
+  events: NewOnboardingEvent[],
+) {
+  if (events.length === 0) return;
+  await db.insert(onboardingEvents).values(events).onConflictDoNothing();
+}
+
 export async function getLastOnboardingEventSeq(db: Db, onboardingId: string) {
   const [row] = await db
     .select({ seq: max(onboardingEvents.seq) })

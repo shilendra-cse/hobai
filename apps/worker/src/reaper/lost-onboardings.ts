@@ -56,7 +56,7 @@ export async function failLostOnboardings(
 
     const sink = createEventSink<OnboardingEventBody>(
       deps,
-      onboardingEventTarget(deps.db, onboardingId),
+      onboardingEventTarget(onboardingId),
       await getLastOnboardingEventSeq(deps.db, onboardingId),
     );
     const ts = new Date().toISOString();

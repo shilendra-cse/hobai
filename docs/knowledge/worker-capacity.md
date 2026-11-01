@@ -24,7 +24,7 @@ Numbered in the order they were found; §5 has which ones the baseline hit.
 | 4 | Old tool results kept in full | memory, linear | Compaction shrinks only what's sent | Store the compacted form |
 | 5 | Compactor check every step | CPU | Stringify and rebuild the whole conversation each step | Use reported usage; keep the view |
 | 6 | Late lock renewals fail healthy runs | queue | A frozen event loop misses the 2-min lock; the run is failed but keeps running | Fix 2, 3, 5; stop a run's work when its lock is lost |
-| 7 | A run's `done` can be lost | events | Part of 3: `done` is dropped like any event whose INSERT times out; a watched run looks unfinished | Fix 3 so events are retried, not dropped |
+| 7 | A run's `done` can be lost | events | Part of 3: `done` is dropped like any event whose INSERT times out; a watched run looks unfinished | Fixed with 3: events are retried, not dropped |
 
 ### 2.1 Bottleneck 1: step request bodies pile up (ruled out)
 
@@ -70,7 +70,13 @@ Numbered in the order they were found; §5 has which ones the baseline hit.
 
 **When it's full, events are lost.** A query waiting over `connectionTimeoutMillis: 2_000` throws; the event is neither stored nor published; the run goes on and `flush()` logs "Some run events weren't saved or published". The run's timeline has a hole.
 
-**Fix.** One event writer per process: sinks hand it their stored events in order, and every ~50–100 ms it writes one multi-row INSERT for all runs (the sink already numbers `seq`), then publishes each in order. Batching per run doesn't help: one run has ~1 event a second.
+**Fix (built).** One event writer per process (`events/event-writer.ts`), shared by every run and setup. Sinks number and redact events as before and hand them over at once; every 50 ms (`EVENT_WRITE_MS`) the writer stores what's waiting in one multi-row INSERT per table (up to 1,000 rows), then publishes each event in order. About 20 queries a second instead of one per event, on one connection at a time. Batching per run wouldn't help: one run has ~1 event a second.
+
+- **Stored before published**, as before: a browser that reconnects replays from Postgres by `seq`.
+- **Live-only events go through it too** (`text_delta`, `agent_step`), only published, so a run's events can't overtake each other.
+- **Retried, not dropped.** A write that gets no answer (no free connection, connection lost) or fails on connection, resources, shutdown or a conflict (SQLSTATE 08, 53, 57, 40) is retried with growing waits (0.25 s, doubling, at most 5 s) for up to 60 s; later events wait behind it. Inserts skip rows already stored (`ON CONFLICT DO NOTHING`), so a retry after a write that did get through is harmless. A row Postgres refuses (e.g. its run was deleted) fails the batch's INSERT, so then each row is written alone and only it fails.
+- **Given up after 60 s**, its stored events are neither stored nor published and `flush()` reports it, as before. Later events are already numbered, so the timeline has a gap but keeps its order.
+- Live events arrive up to ~50 ms later.
 
 **Measured.** Up to 65 queries waiting for a connection at 500 runs and ~900 at 1,000, where 533 runs logged "Some run events weren't saved or published" (§5).
 
@@ -125,7 +131,7 @@ The run's row is ended either way: `markRunEnded` is its own query, after the ev
 
 **Why it matters.** Someone watching the run sees "Working" until they reload the page. Losing any event leaves a hole in the timeline; losing `done` leaves the run looking unfinished.
 
-**Fix.** Part of bottleneck 3: the event writer retries a write that fails instead of dropping its events. The harness now checks Postgres for runs whose `done` it didn't hear and reports them as "Ended, `done` lost", so lost events can't pass for hung runs again.
+**Fix (built).** Part of bottleneck 3: the event writer retries a write that fails instead of dropping its events (§2.3). The harness now checks Postgres for runs whose `done` it didn't hear and reports them as "Ended, `done` lost", so lost events can't pass for hung runs again.
 
 ## 3. What's left after the fixes
 

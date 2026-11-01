@@ -8,11 +8,8 @@ import {
 import { collectDiff, findBaseline } from "@hobai/runner";
 import { parkSandbox } from "@hobai/sandbox";
 import type { Queue } from "bullmq";
-import {
-  createEventSink,
-  runEventTarget,
-  type Publisher,
-} from "../events/sink.js";
+import type { EventWriter } from "../events/event-writer.js";
+import { createEventSink, runEventTarget } from "../events/sink.js";
 import type { Log } from "../lib/log.js";
 import type { SandboxConnector } from "../lib/sandbox-factory.js";
 
@@ -43,7 +40,7 @@ export type LostRun = {
 export type LostRunsDeps = {
   db: Db;
   queue: Pick<Queue, "getJobState">;
-  publisher: Publisher;
+  events: EventWriter;
   log: Log;
   connectSandbox: SandboxConnector;
 };
@@ -131,7 +128,7 @@ export async function failLostRuns(deps: LostRunsDeps): Promise<LostRun[]> {
 
     const sink = createEventSink(
       deps,
-      runEventTarget(deps.db, runId),
+      runEventTarget(runId),
       await getLastRunEventSeq(deps.db, runId),
     );
     const ts = new Date().toISOString();

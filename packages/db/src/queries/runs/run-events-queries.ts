@@ -8,6 +8,12 @@ export async function insertRunEvent(db: Db, event: NewRunEvent) {
   await db.insert(runEvents).values(event);
 }
 
+/** A row already stored (same run and number) is left as it is, so a write can be retried. */
+export async function insertRunEvents(db: Db, events: NewRunEvent[]) {
+  if (events.length === 0) return;
+  await db.insert(runEvents).values(events).onConflictDoNothing();
+}
+
 export async function getLastRunEventSeq(db: Db, runId: string) {
   const [row] = await db
     .select({ seq: max(runEvents.seq) })

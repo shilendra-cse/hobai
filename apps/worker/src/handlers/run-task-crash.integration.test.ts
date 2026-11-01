@@ -2,6 +2,7 @@ import { scriptedModel } from "@hobai/agent/testing";
 import { DbEnvironmentStore, runs, type Db } from "@hobai/db";
 import { insertRun, testDatabaseOrSkip } from "@hobai/db/testing";
 import { FakeSandbox } from "@hobai/sandbox/testing";
+import { createEventWriter, dbEventRows } from "../events/event-writer.js";
 import { fakeGithubApp } from "../testing/fake-github-app.js";
 import { eq } from "drizzle-orm";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -36,7 +37,10 @@ describe.skipIf(!database)("run-task handler when runTask throws", () => {
       handleRunTask(
         {
           db,
-          publisher: { publish: async () => 1 },
+          events: createEventWriter({
+            store: dbEventRows(db),
+            publisher: { publish: async () => 1 },
+          }),
           log: () => {},
           model: scriptedModel([]).resolved,
           createSandbox: async () => new FakeSandbox(),

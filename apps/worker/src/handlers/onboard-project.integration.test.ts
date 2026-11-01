@@ -14,7 +14,11 @@ import type { SandboxLabels } from "@hobai/sandbox";
 import { FakeSandbox } from "@hobai/sandbox/testing";
 import type { OnboardingAnswer, OnboardingEvent } from "@hobai/shared";
 import { afterAll, describe, expect, it } from "vitest";
-import type { Publisher } from "../events/sink.js";
+import {
+  createEventWriter,
+  dbEventRows,
+  type Publisher,
+} from "../events/event-writer.js";
 import { fakeGithubApp } from "../testing/fake-github-app.js";
 import { createAnswerRouter } from "../onboardings/answer-router.js";
 import {
@@ -129,7 +133,7 @@ describe.skipIf(!database)("onboard-project handler against Postgres", () => {
     };
     const deps: OnboardProjectDeps = {
       db,
-      publisher,
+      events: createEventWriter({ store: dbEventRows(db), publisher }),
       log: (_level, message, data) => logs.push({ message, data }),
       model: scriptedModel(script).resolved,
       createSandbox: createSandbox(handler, labels),
@@ -140,6 +144,7 @@ describe.skipIf(!database)("onboard-project handler against Postgres", () => {
     };
     return {
       deps,
+      publisher,
       published,
       labels,
       logs,
@@ -395,10 +400,10 @@ describe.skipIf(!database)("onboard-project handler against Postgres", () => {
 
   it("stops when you press Stop while it waits for you", async () => {
     const { onboardingId } = await queuedSetup();
-    const { deps, published } = depsFor(lintBroken, [askAboutLint]);
+    const { deps, publisher, published } = depsFor(lintBroken, [askAboutLint]);
     const stop = new AbortController();
-    const original = deps.publisher.publish;
-    deps.publisher.publish = async (channel, message) => {
+    const original = publisher.publish;
+    publisher.publish = async (channel, message) => {
       const result = await original(channel, message);
       if (message.includes('"question_asked"')) setTimeout(() => stop.abort());
       return result;

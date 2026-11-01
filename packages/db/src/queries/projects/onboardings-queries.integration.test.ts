@@ -14,6 +14,7 @@ import {
   findUserOnboarding,
   getLastOnboardingEventSeq,
   insertOnboardingEvent,
+  insertOnboardingEvents,
   listUnfinishedOnboardings,
   markOnboardingEnded,
   markOnboardingResumed,
@@ -175,6 +176,37 @@ describe.skipIf(!database)("onboardings queries against Postgres", () => {
         type: "info",
       }),
     ).rejects.toThrow();
+  });
+
+  it("inserts many events at once, leaving a number already stored as it is", async () => {
+    const { onboarding } = await started();
+    await insertOnboardingEvent(db, {
+      onboardingId: onboarding.id,
+      seq: 1,
+      type: "info",
+      payload: { message: "first" },
+    });
+
+    await insertOnboardingEvents(db, [
+      {
+        onboardingId: onboarding.id,
+        seq: 1,
+        type: "info",
+        payload: { message: "again" },
+      },
+      { onboardingId: onboarding.id, seq: 2, type: "done" },
+    ]);
+    await insertOnboardingEvents(db, []);
+
+    expect(
+      (await findOnboardingEventsAfter(db, onboarding.id, 0, 10)).map((e) => [
+        e.seq,
+        e.payload,
+      ]),
+    ).toEqual([
+      [1, { message: "first" }],
+      [2, {}],
+    ]);
   });
 
   it("goes away with its project", async () => {

@@ -18,7 +18,11 @@ import type { EnvironmentConfig, RunEvent } from "@hobai/shared";
 import { asc, eq } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import { SHORT_NAME } from "@hobai/shared/brand";
-import type { Publisher } from "../events/sink.js";
+import {
+  createEventWriter,
+  dbEventRows,
+  type Publisher,
+} from "../events/event-writer.js";
 import {
   FAKE_COMMIT_SHA,
   FAKE_REPO_TOKEN,
@@ -127,7 +131,7 @@ describe.skipIf(!database)("run-task handler against Postgres", () => {
       const { model, resolved } = scriptedModel(script);
       const value: RunTaskDeps = {
         db,
-        publisher,
+        events: createEventWriter({ store: dbEventRows(db), publisher }),
         log: (_level, message) => logs.push(message),
         model: resolved,
         createSandbox: async (l) => {

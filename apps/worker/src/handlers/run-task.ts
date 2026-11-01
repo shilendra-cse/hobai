@@ -9,11 +9,11 @@ import {
 import { runTask, type RunResult, type RunTaskOptions } from "@hobai/runner";
 import type { GithubApp } from "@hobai/github";
 import type { RunEvent, QueuedWork } from "@hobai/shared";
+import type { EventWriter } from "../events/event-writer.js";
 import {
   createEventSink,
   runEventTarget,
   type EventSink,
-  type Publisher,
 } from "../events/sink.js";
 import {
   createRunRecord,
@@ -28,7 +28,7 @@ import type { SandboxFactory } from "../lib/sandbox-factory.js";
 
 export type RunTaskDeps = {
   db: Db;
-  publisher: Publisher;
+  events: EventWriter;
   log: Log;
   createSandbox: SandboxFactory;
   github: Pick<GithubApp, "repoToken" | "repoClient">;
@@ -166,7 +166,7 @@ export async function handleRunTask(
     return null;
   }
 
-  const sink = createEventSink(deps, runEventTarget(db, runId));
+  const sink = createEventSink(deps, runEventTarget(runId));
   const emit = (event: RunEvent) => {
     sink.emit(event);
     record.observe(event);
