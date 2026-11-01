@@ -24,6 +24,7 @@ export type LevelSummary = {
   fakeCpuPeakPercent: number;
   events: LevelResult["events"] & { perSecondPeak: number };
   unpublished: number;
+  doneLost: number;
   warnings: Record<string, number>;
 };
 
@@ -66,6 +67,7 @@ export function summarize(result: LevelResult): LevelSummary {
       perSecondPeak: peak(result.samples.map((s) => s.eventsPerSecond)),
     },
     unpublished: result.unpublished,
+    doneLost: result.doneLost,
     warnings: result.warnings,
   };
 }
@@ -113,6 +115,7 @@ const ROWS: [string, (s: LevelSummary) => string | number][] = [
       `${s.events.lagMs.p50} / ${s.events.lagMs.p99} / ${s.events.lagMs.max} ms`,
   ],
   ["Stored but not published", (s) => s.unpublished],
+  ["Ended, `done` lost", (s) => s.doneLost],
   [
     "Worker warnings",
     (s) =>
