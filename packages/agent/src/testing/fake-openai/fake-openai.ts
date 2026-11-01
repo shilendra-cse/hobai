@@ -7,7 +7,11 @@ import {
 } from "node:http";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { createOpenAI } from "@ai-sdk/openai";
+import { DEFAULT_AGENT_MODEL } from "@hobai/shared";
 import { z } from "zod";
+import { findModelSpec } from "../../model/catalog.js";
+import type { ResolvedModel } from "../../model/resolve-model.js";
 
 const RECORDING = path.join(import.meta.dirname, "recorded", "step-1.sse");
 const CHARS_PER_TOKEN = 4;
@@ -27,6 +31,8 @@ export type FakeOpenAIRequest = {
 export type FakeOpenAIReply = {
   text?: string;
   toolCall?: { name: string; input: unknown };
+  /** This step's wait before its first event, instead of the server's. */
+  firstTokenMs?: number;
 };
 
 export type FakeOpenAIOptions = {
@@ -35,6 +41,8 @@ export type FakeOpenAIOptions = {
   tokensPerSecond?: number;
   /** Time before the first event, like the model reading the prompt. */
   firstTokenMs?: number;
+  /** Share of input tokens reported as cached after the first step, as prompt caching does. */
+  cachedInputShare?: number;
 };
 
 export type FakeOpenAI = {
@@ -44,6 +52,7 @@ export type FakeOpenAI = {
 };
 
 type Json = Record<string, unknown>;
+type Pace = { tokensPerSecond: number; firstTokenMs: number };
 type Chunk = { text: string; token: boolean };
 
 const jsonObject = z.record(z.string(), z.unknown());
@@ -92,6 +101,7 @@ function buildResponse(
   request: FakeOpenAIRequest,
   reply: FakeOpenAIReply,
   inputChars: number,
+  cachedInputShare: number,
 ): Chunk[] {
   const chunks: Chunk[] = [];
   let sequence = 0;
@@ -251,6 +261,8 @@ function buildResponse(
     "output_tokens_details",
   ).reasoning_tokens;
   const inputTokens = Math.ceil(inputChars / CHARS_PER_TOKEN);
+  const cachedTokens =
+    request.step > 0 ? Math.floor(inputTokens * cachedInputShare) : 0;
   const totalOutput = outputTokens + Number(reasoningTokens ?? 0);
   emit({
     ...completed,
@@ -263,6 +275,10 @@ function buildResponse(
       usage: {
         ...usage,
         input_tokens: inputTokens,
+        input_tokens_details: {
+          ...field(usage, "input_tokens_details"),
+          cached_tokens: cachedTokens,
+        },
         output_tokens: totalOutput,
         total_tokens: inputTokens + totalOutput,
       },
@@ -280,7 +296,7 @@ async function readBody(req: IncomingMessage) {
 async function send(
   res: ServerResponse,
   chunks: Chunk[],
-  { tokensPerSecond, firstTokenMs }: Required<Omit<FakeOpenAIOptions, "reply">>,
+  { tokensPerSecond, firstTokenMs }: Pace,
 ) {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -337,10 +353,17 @@ export async function startFakeOpenAI(
           jsonObject.safeParse(item).data?.type === "function_call_output",
       ).length;
       const request = { ...parsed, step };
+      const reply = options.reply(request);
       await send(
         res,
-        buildResponse(template, request, options.reply(request), body.length),
-        pace,
+        buildResponse(
+          template,
+          request,
+          reply,
+          body.length,
+          options.cachedInputShare ?? 0,
+        ),
+        { ...pace, firstTokenMs: reply.firstTokenMs ?? pace.firstTokenMs },
       );
     })().catch((error: unknown) => {
       if (res.headersSent) res.destroy();
@@ -368,4 +391,15 @@ export async function startFakeOpenAI(
       );
     },
   };
+}
+
+/** A catalog model through the real OpenAI provider, sending its requests to a fake server. */
+export function fakeOpenAIModel(
+  fake: FakeOpenAI,
+  id: string = DEFAULT_AGENT_MODEL,
+): ResolvedModel {
+  const spec = findModelSpec(id);
+  if (!spec) throw new Error(`Model "${id}" isn't in the model catalog.`);
+  const provider = createOpenAI({ baseURL: fake.url, apiKey: "fake-key" });
+  return { spec, languageModel: provider(id.replace(/^openai:/, "")) };
 }

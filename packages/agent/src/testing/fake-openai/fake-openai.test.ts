@@ -1,20 +1,16 @@
-import { createOpenAI } from "@ai-sdk/openai";
 import { FakeSandbox } from "@hobai/sandbox/testing";
-import { DEFAULT_AGENT_MODEL, type RunEvent } from "@hobai/shared";
+import type { RunEvent } from "@hobai/shared";
 import { afterEach, describe, expect, it } from "vitest";
-import { findModelSpec } from "../../model/catalog.js";
-import type { ResolvedModel } from "../../model/resolve-model.js";
 import { runAgent } from "../../task-agent/run-agent.js";
 import { createToolContext } from "../../tools/core/context.js";
 import {
+  fakeOpenAIModel,
   startFakeOpenAI,
   toTokens,
   type FakeOpenAI,
   type FakeOpenAIOptions,
   type FakeOpenAIRequest,
 } from "./fake-openai.js";
-
-const spec = findModelSpec(DEFAULT_AGENT_MODEL)!;
 
 const twoSteps: FakeOpenAIOptions["reply"] = ({ step }) =>
   step === 0
@@ -45,11 +41,7 @@ async function runThroughFake(options: FakeOpenAIOptions) {
       return options.reply(request);
     },
   });
-  const provider = createOpenAI({ baseURL: fake.url, apiKey: "fake-key" });
-  const model: ResolvedModel = {
-    spec,
-    languageModel: provider(spec.id.replace(/^openai:/, "")),
-  };
+  const model = fakeOpenAIModel(fake);
   const events: RunEvent[] = [];
   const result = await runAgent({
     runId: "run-1",
@@ -101,6 +93,32 @@ describe("fake OpenAI server", () => {
 
     expect(result.usage.inputTokens).toBeGreaterThan(0);
     expect(result.usage.outputTokens).toBeGreaterThan(0);
+  });
+
+  it("reports a share of later steps' input as cached", async () => {
+    const uncached = await runThroughFake({ reply: twoSteps });
+    const cached = await runThroughFake({
+      reply: twoSteps,
+      cachedInputShare: 0.9,
+    });
+
+    expect(uncached.result.usage.cachedInputTokens).toBe(0);
+    expect(cached.result.usage.cachedInputTokens).toBeGreaterThan(0);
+    expect(cached.result.usage.cachedInputTokens).toBeLessThan(
+      cached.result.usage.inputTokens,
+    );
+  });
+
+  it("waits a step's own time before its first event", async () => {
+    const started = Date.now();
+    await runThroughFake({
+      reply: () => ({
+        firstTokenMs: 150,
+        toolCall: { name: "finish_task", input: { summary: "Done." } },
+      }),
+    });
+
+    expect(Date.now() - started).toBeGreaterThanOrEqual(150);
   });
 
   it("paces tokens at the given speed", async () => {

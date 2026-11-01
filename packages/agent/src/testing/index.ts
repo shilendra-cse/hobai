@@ -4,6 +4,7 @@ export {
   type ScriptedStep,
 } from "./mock-model.js";
 export {
+  fakeOpenAIModel,
   startFakeOpenAI,
   type FakeOpenAI,
   type FakeOpenAIOptions,

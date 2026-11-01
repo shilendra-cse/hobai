@@ -68,7 +68,7 @@ In the order they're hit as concurrency goes up.
 
 ### 2.4 Bottleneck 4: old tool results kept in full (memory)
 
-**What's kept.** `state.messages` (`run-segment.ts`) holds the conversation: the task, each tool call, each tool result. Tool results are most of it: test output, file contents, logs, up to 1 MB each (`MAX_OUTPUT_BYTES`).
+**What's kept.** `state.messages` (`run-segment.ts`) holds the conversation: the task, each tool call, each tool result. Tool results are most of it: test output, file contents, logs. Each tool caps what it returns to the model: `bash` at 28,000 characters (the full output stays in a log in the sandbox), `read_file` at 2,000 lines, `search` at 100 matches, `list_files` at 500 entries, failing checks at 6,000 characters each. So a single result is at most tens of KB; a command's raw output (up to 1 MB, `MAX_OUTPUT_BYTES`) is only in memory until the tool shortens it.
 
 **What compaction does.** Before each model call, `Compactor.apply` (`compaction.ts`) checks the size; over 60% of the 272k-token window, it builds a compacted **copy** where old tool results become one line (`"[read src/date.ts, output removed]"`) and sends that. The copy is never written back: `state.messages` keeps every old result in full, though the model never gets them again.
 
