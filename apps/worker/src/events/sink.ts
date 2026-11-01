@@ -12,7 +12,10 @@ export type Publisher = {
   publish(channel: string, message: string): Promise<unknown>;
 };
 
-const LIVE_ONLY: ReadonlySet<string> = new Set(["text_delta", "agent_step"]);
+const LIVE_ONLY: ReadonlySet<string> = new Set(["agent_step"]);
+
+/** How long the agent's streamed text is gathered before it's sent as one `text_delta`. */
+export const TEXT_BATCH_MS = 100;
 
 type StoredRow = {
   seq: number;
@@ -59,9 +62,31 @@ export function createEventSink<E extends SinkEvent = RunEvent>(
   target: EventTarget,
   /** The last event number already stored, when adding to existing events. */
   lastSeq = 0,
+  options: { textBatchMs?: number } = {},
 ): EventSink<E> {
   let seq = lastSeq;
   const writes = createSerialQueue();
+  const textBatchMs = options.textBatchMs ?? TEXT_BATCH_MS;
+  let text: { ts: string; delta: string } | null = null;
+  let textTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Text is never stored and only shown live, so it isn't checked for GitHub tokens: one
+  // would arrive split across many deltas anyway.
+  const sendText = () => {
+    clearTimeout(textTimer);
+    textTimer = undefined;
+    if (!text) return;
+    const message = JSON.stringify({
+      type: "text_delta",
+      ts: text.ts,
+      delta: text.delta,
+      ...target.owner,
+    });
+    text = null;
+    writes.add(async () => {
+      await deps.publisher.publish(target.channel, message);
+    });
+  };
 
   const write = async (unredacted: E) => {
     const event = redactGithubTokensIn(unredacted);
@@ -93,7 +118,24 @@ export function createEventSink<E extends SinkEvent = RunEvent>(
   };
 
   return {
-    emit: (event) => writes.add(() => write(event)),
-    flush: () => writes.drain(),
+    emit: (event) => {
+      if (event.type === "text_delta") {
+        const { delta } = event as E & { delta: string };
+        if (text) {
+          text.delta += delta;
+        } else {
+          text = { ts: event.ts, delta };
+          textTimer = setTimeout(sendText, textBatchMs);
+        }
+        return;
+      }
+      // Text gathered so far goes first, so events keep their order.
+      sendText();
+      writes.add(() => write(event));
+    },
+    flush: () => {
+      sendText();
+      return writes.drain();
+    },
   };
 }

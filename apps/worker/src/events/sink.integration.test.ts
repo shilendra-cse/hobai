@@ -3,7 +3,7 @@ import { runEvents, type Db } from "@hobai/db";
 import { insertRun, testDatabaseOrSkip } from "@hobai/db/testing";
 import type { RunEvent, RunStage } from "@hobai/shared";
 import { asc, eq } from "drizzle-orm";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { createEventSink, runEventTarget, type Publisher } from "./sink.js";
 
 const database = await testDatabaseOrSkip("event sink");
@@ -135,6 +135,57 @@ describe.skipIf(!database)("event sink against Postgres", () => {
       ["agent_step", undefined],
       ["stage_changed", 1],
     ]);
+  });
+
+  it("sends the text streamed within an interval as one event, before the next event", async () => {
+    const { run } = await insertRun(db);
+    const { publisher, messages } = recordingPublisher();
+    const sink = createEventSink({ publisher }, runEventTarget(db, run.id));
+    const later = "2026-10-20T10:00:00.050Z";
+
+    sink.emit({ type: "text_delta", runId: run.id, ts, delta: "Reading" });
+    sink.emit({ type: "text_delta", runId: run.id, ts: later, delta: " the" });
+    sink.emit({ type: "text_delta", runId: run.id, ts: later, delta: " file" });
+    sink.emit({
+      type: "tool_start",
+      runId: run.id,
+      ts: later,
+      toolCallId: "call-1",
+      toolName: "read_file",
+      input: { path: "src/date.ts" },
+    });
+    sink.emit({ type: "text_delta", runId: run.id, ts: later, delta: "Done" });
+    await sink.flush();
+
+    expect(
+      messages.map(({ event }) =>
+        event.type === "text_delta"
+          ? [event.type, event.delta, event.ts]
+          : [event.type],
+      ),
+    ).toEqual([
+      ["text_delta", "Reading the file", ts],
+      ["tool_start"],
+      ["text_delta", "Done", later],
+    ]);
+  });
+
+  it("sends gathered text when its interval ends", async () => {
+    const { run } = await insertRun(db);
+    const { publisher, messages } = recordingPublisher();
+    const sink = createEventSink({ publisher }, runEventTarget(db, run.id), 0, {
+      textBatchMs: 10,
+    });
+
+    sink.emit({ type: "text_delta", runId: run.id, ts, delta: "Reading" });
+    sink.emit({ type: "text_delta", runId: run.id, ts, delta: " the file" });
+
+    await vi.waitFor(() => expect(messages).toHaveLength(1));
+    expect(messages[0]?.event).toMatchObject({
+      type: "text_delta",
+      runId: run.id,
+      delta: "Reading the file",
+    });
   });
 
   it("keeps the order of many quick events", async () => {

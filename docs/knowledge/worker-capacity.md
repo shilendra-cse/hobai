@@ -1,6 +1,6 @@
 # Worker capacity
 
-> Status: **Baseline measured, no fixes built** · Last updated: 2026-11-01 · Code: `apps/worker`, `packages/agent` · Related: [architecture.md](./architecture.md) §10 "Capacity", [agent.md](./agent.md)
+> Status: **Baseline measured, fixes in progress** · Last updated: 2026-11-01 · Code: `apps/worker`, `packages/agent` · Related: [architecture.md](./architecture.md) §10 "Capacity", [agent.md](./agent.md)
 
 The goal: **1,000 runs at once on one 2 vCPU / 8 GB VPS.** Everything heavy happens in the sandbox or at OpenAI; the worker only waits on them, so nothing it does should need much CPU or memory. This page lists what stops it today, found by reading the code and measured with the load harness (§4). Sandbox quota, OpenAI rate limits and spend caps are outside the worker and left out.
 
@@ -54,7 +54,9 @@ Numbered in the order they were found; §5 has which ones the baseline hit.
 
 **The math.** Including the SDK's own parsing, ~50 µs per token. One core does ~20k tokens a second at 100%, ~10k with headroom for everything else on the loop. At ~70 tokens a second, that's ~140 runs writing at once; with 30–50% of runs writing at any moment, **~300–500 runs per process**. Past that, event-loop lag grows, BullMQ lock renewals fall behind (with `maxStalledCount: 0` a stalled lock ends a healthy run), and the sink's queue backs up.
 
-**Fix.** The sink buffers a run's deltas and sends one `text_delta` every ~100 ms, before any other event (keeps order), and on `flush()`. The event shape doesn't change. Redact the joined string with `redactGithubTokens`, which also catches a token split across two deltas. ~10 sends a second per run instead of ~70.
+**Fix (built).** The sink gathers a run's deltas and sends them as one `text_delta` every 100 ms (`TEXT_BATCH_MS`), before any other event (keeps order), and on `flush()`. The event shape doesn't change; the batch carries its first delta's time. ~10 sends a second per run instead of ~70, and a delta in between costs a string append. 200 ms would save little more (5 sends instead of 10) and makes the live text visibly jumpy.
+
+**No token check on text.** Text is never stored and is only shown live to the run's owner, and the check couldn't work there: a GitHub token is ~40 characters, a delta ~4, and each delta was checked alone. The worker's own token never reaches the agent (it's only in the clone command's environment, `git-auth.ts`), so a token in text could only come from the user's repository. Stored events keep the check: they're kept, and they're ~1 a second per run.
 
 **Measured.** Not separated from the other CPU costs yet (a CPU profile would). The event loop held up to 2.8 s at 500 runs and 7.6 s at 1,000, worst in the first minutes when every run streams at the same time (§5).
 
