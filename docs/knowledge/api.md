@@ -137,7 +137,7 @@ id: 9
 data: {"type":"done","status":"succeeded","runId":"…","seq":9,"ts":"…"}
 ```
 
-- **`data`** is a `RunEvent` (`packages/shared`), the same JSON the worker publishes. **`id`** is its `seq`: stored events are numbered 1, 2, 3…; live-only events (`text_delta`, `agent_step`) have no id and aren't replayed.
+- **`data`** is a `RunEvent` (`packages/shared`), the same JSON the worker publishes. **`id`** is its `seq`: stored events are numbered 1, 2, 3…; live-only events (`text_delta`, `agent_step`) have no id and aren't replayed. A `text_delta` carries the text the agent wrote in about 100 ms, not one token; append it as it comes.
 - **Resuming:** `Last-Event-ID: <seq>` (sent by `EventSource` itself on reconnect) or `?after=<seq>` starts after that event. Without either, the whole run is replayed.
 - **Order of work:** the server listens on the run's Redis channel first, then replays stored events from `run_events` 500 at a time, then forwards live ones. Each stored event is sent once; a jump in `seq` is filled from `run_events`.
 - **Ending:** after the `done` event, or as soon as the run has ended without one (e.g. a queued run that was cancelled). A `: ping` every 15 s keeps proxies from closing the connection and re-checks the run's status. `EventSource` reconnects when a stream ends, so clients close it on `done`.

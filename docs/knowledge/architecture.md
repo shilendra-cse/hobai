@@ -159,11 +159,12 @@ Client opens the SSE stream for `run.id`.
 
 ### 4.3 Live events
 ```
-worker emit(e):   INSERT run_events  +  PUBLISH run:{runId}
+worker emit(e):   sink numbers it (seq) → event writer, shared by every run
+event writer:     every 50 ms: one INSERT for all runs' waiting events → PUBLISH each, in order
 server SSE:       SUBSCRIBE first → replay run_events after Last-Event-ID → forward live (dedupe by id)
                   heartbeat 15s; close on done/error
 ```
-Events are keyed by (`run_id`, `seq`); `seq` is the SSE event id. High-frequency `text_delta` and `agent_step` events are published live only, never stored.
+Events are keyed by (`run_id`, `seq`); `seq` is the SSE event id. High-frequency `text_delta` and `agent_step` events are published live only, never stored; a run's `text_delta`s are gathered for 100 ms and sent as one. Events are stored before they're published, so a reconnecting browser can replay them; a write that fails is retried for up to 60 s rather than dropped. Details and the reasons: [worker-capacity.md](./worker-capacity.md) §2.2–2.3. Code: `apps/worker/src/events/` (`sink.ts`, `event-writer.ts`).
 
 ### 4.4 Follow-ups
 - **UI follow-up message** (post-MVP: `POST /api/tasks/:id/messages`) → new run on the same task with `trigger=follow_up`; checks out the task's branch, receives the previous run's summary + new instruction, pushes to the same PR.
