@@ -1,0 +1,73 @@
+{
+  "model": "gpt-6-luna",
+  "input": [
+    {
+      "role": "developer",
+      "content": "You are a coding agent working in a repository. Before each tool call, say in one short sentence what you are about to do."
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Read README.md, then call finish_task with a one-sentence summary of what the repository is."
+        }
+      ]
+    },
+    {
+      "type": "item_reference",
+      "id": "rs_0eb721685582213f006ae68afe21e087d2a671bde98b0ffa93"
+    },
+    {
+      "type": "item_reference",
+      "id": "msg_0eb721685582213f006ae68afe497487d2b9bfbfc74217e6c6"
+    },
+    {
+      "type": "item_reference",
+      "id": "fc_0eb721685582213f006ae68afe7d3487d294a1bbe47dc587fd"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_kwshFL48fVOQ00uonutyovib",
+      "output": "README.md (3 lines)\n1  # Demo\n2  \n3  A small demo repository for testing."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "read_file",
+      "description": "Read a file from the repository.",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      },
+      "strict": false
+    },
+    {
+      "type": "function",
+      "name": "finish_task",
+      "description": "Finish the task with a summary.",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": ["summary"],
+        "additionalProperties": false
+      },
+      "strict": false
+    }
+  ],
+  "tool_choice": "auto",
+  "stream": true
+}

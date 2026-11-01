@@ -15,21 +15,25 @@ import { startConsumer } from "./consumer.js";
 import { handleOnboardProject } from "./handlers/onboard-project.js";
 import { handleRunTask } from "./handlers/run-task.js";
 import type { Log } from "./lib/log.js";
+import type { SandboxFactory } from "./lib/sandbox-factory.js";
 import { createAnswerRouter } from "./onboardings/answer-router.js";
 import { handleReap } from "./reaper/reap.js";
 import { scheduleReaper } from "./reaper/schedule.js";
 
-/** Stand-ins for the model and GitHub, for the end-to-end test. */
+/** Stand-ins for the model, GitHub and the sandbox, for the end-to-end test and the load harness. */
 export type WorkerOverrides = {
   taskModel?: ResolvedModel;
   setupModel?: ResolvedModel;
   titleModel?: ResolvedModel;
   github?: Pick<GithubApp, "repoToken" | "repoClient">;
+  createSandbox?: SandboxFactory;
 };
 
 export type RunningWorker = {
   /** Throws when Postgres or Redis can't be reached. */
   check(): Promise<void>;
+  /** The database pool's connections, and queries waiting for one. */
+  poolStats(): { total: number; idle: number; waiting: number };
   /** Stops taking new work, waits for the work in progress, then closes the connections. */
   stop(): Promise<void>;
 };
@@ -71,8 +75,9 @@ export async function startWorker(
     log,
     model: model(overrides.taskModel),
     titleModel: model(overrides.titleModel),
-    createSandbox: (labels: SandboxLabels) =>
-      createSandbox({ ...config.sandbox, labels }),
+    createSandbox:
+      overrides.createSandbox ??
+      ((labels: SandboxLabels) => createSandbox({ ...config.sandbox, labels })),
     github: overrides.github ?? createGithubApp(config.github),
     answers: createAnswerRouter(),
     answerTimeoutMs: config.answerTimeoutMs,
@@ -107,6 +112,11 @@ export async function startWorker(
       await pingDatabase(db);
       await redis.queue.ping();
     },
+    poolStats: () => ({
+      total: pool.totalCount,
+      idle: pool.idleCount,
+      waiting: pool.waitingCount,
+    }),
     async stop() {
       await consumer.close();
       await queue.close();

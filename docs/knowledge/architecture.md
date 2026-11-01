@@ -340,7 +340,7 @@ How many runs execute at once is `WORKER_CONCURRENCY` per worker process (produc
 | Limit | Today | When exceeded |
 |---|---|---|
 | **E2B concurrency** (sandboxes running at once, for the account) | Hobby: **20**, whatever their size. A run holds one sandbox and a setup two at once (its tries, then a fresh one for the final check). Pro ($150/month) raises it to 100 | Creating the sandbox is refused: the run fails, "Couldn't prepare the sandbox" |
-| **The worker on the VPS** | Not measured. Estimate: 20–40 runs. Memory goes first: a long run holds 30–100 MB, and Node's heap stops at ~2.2 GB on an 8 GB machine unless `--max-old-space-size` is set. What limits it and the fixes towards 1,000 runs: [worker-capacity.md](./worker-capacity.md) | Out of memory, then slow event saving |
+| **The worker on the VPS** | Not measured. Estimate: a few hundred runs, limited by memory (each run holds its conversation, a few MB to tens of MB; Node's heap stops at ~2.2 GB on an 8 GB machine unless `--max-old-space-size` is set) and by streaming CPU on one core. What limits it and the fixes towards 1,000 runs: [worker-capacity.md](./worker-capacity.md) | Out of memory, then slow event saving |
 | **OpenAI rate limit** (tokens per minute for the account's tier) | Not checked | Calls are retried, then the run fails |
 | **Daily spend cap** (`DAILY_SPEND_CAP_USD`, $5) | Roughly 10–25 runs a day | New tasks are refused with a clear message; nothing running fails |
 

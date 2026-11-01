@@ -22,7 +22,8 @@
     "lint:fix": "eslint . --fix",
     "type-check": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "load": "node --import tsx load/run-load.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -19,7 +19,8 @@
     "lint:fix": "eslint . --fix",
     "type-check": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "record-openai-stream": "node --env-file-if-exists=../../apps/worker/.env src/scripts/record-openai-stream.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
