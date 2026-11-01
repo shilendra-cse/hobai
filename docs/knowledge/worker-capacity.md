@@ -111,4 +111,20 @@ With two processes (2 cores), 1,000 runs fit when conversations are small and si
 
 ## 4. Measuring
 
-A local load harness, without Daytona or OpenAI: the fake sandbox with realistic delays and a scripted model that streams at real token speed (~70 a second), ramping 100, 250, 500 and 1,000 runs. Recorded per level: heap and RSS, event-loop lag, CPU, database pool waits, time to save events. Run before the fixes for a baseline and after each one, so every estimate on this page becomes a number. The model has to be the real `@ai-sdk/openai` provider pointed at a fake OpenAI server (`OPENAI_BASE_URL`), not a mock model: the provider's per-token parsing and per-step serialization are part of what's measured.
+`apps/worker/load/` measures it without Daytona or OpenAI. A real worker (`startWorker()`) runs in a child process of its own and is the only process measured. Around it:
+
+| Part | What it is |
+|---|---|
+| Model | The real `@ai-sdk/openai` provider, pointed at a fake OpenAI server (`OPENAI_BASE_URL`) in its own process. It streams in the format of a recorded OpenAI response (`packages/agent/src/testing/fake-openai/recorded/`), one token per delta at `--tokens-per-second`, so the provider's per-token parsing and per-step serialization are part of the load |
+| Sandbox | `LoadSandbox`: 150 ms per call like a remote one; commands take the time their marker says and print that much; files have the size in their name. The diff is empty, so nothing is delivered |
+| Runs | Planned from a key in the task: **typical** (25–50 steps), **long** (100–145 steps, larger outputs), **mixed** (a fifth long). Edits go to files read earlier, as the edit tool requires |
+| Postgres | A fresh database on the development server (dropped afterwards), behind a proxy adding `--db-latency-ms` per round trip, like Neon |
+| Redis | Database 15 of the development Redis, so the development worker never takes the load's work |
+
+Each level starts a new worker with `WORKER_CONCURRENCY` set to the level, queues the runs over `--ramp-seconds`, and stops when they've all finished, the worker exits, its event loop stalls (30 s) or the level times out. Every second it records the worker's heap, RSS, CPU, event-loop delay, GC and database pool, the fake server's CPU, and how far behind live events arrive.
+
+```
+pnpm --filter @hobai/worker load --runs 100,250,500,1000 --profile mixed --label baseline
+```
+
+Options: `--time-scale` (1 is real time; smaller for a quick check, e.g. `--runs 5,20 --time-scale 0.05`), `--tokens-per-second` (70), `--db-latency-ms` (7), `--ramp-seconds` (30), `--level-timeout-minutes` (50), `--max-heap-mb` (Node's default otherwise, as in production). Results go to `apps/worker/load/results/<time>-<label>/` (gitignored): `samples.jsonl`, `summary.json` and a `summary.md` table. A laptop's numbers compare a fix with what came before it; the capacity numbers come from the same run on the 2 vCPU / 8 GB VPS.

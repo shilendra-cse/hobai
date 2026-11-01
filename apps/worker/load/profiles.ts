@@ -283,6 +283,9 @@ export function planStep(
 export const loadReply =
   (mix: ProfileMix, timeScale: number) =>
   (request: FakeOpenAIRequest): FakeOpenAIReply => {
+    // Naming the task is the only call without tools, and it wants a short line of text.
+    if (request.tools.length === 0)
+      return { text: "Work through the repository" };
     const runKey = runKeyOf(request);
     if (!runKey) throw new Error("The request isn't from a load test run.");
     const step = planStep(runKey, profileFor(runKey, mix), request.step);

@@ -32,6 +32,8 @@ export type WorkerOverrides = {
 export type RunningWorker = {
   /** Throws when Postgres or Redis can't be reached. */
   check(): Promise<void>;
+  /** The database pool's connections, and queries waiting for one. */
+  poolStats(): { total: number; idle: number; waiting: number };
   /** Stops taking new work, waits for the work in progress, then closes the connections. */
   stop(): Promise<void>;
 };
@@ -110,6 +112,11 @@ export async function startWorker(
       await pingDatabase(db);
       await redis.queue.ping();
     },
+    poolStats: () => ({
+      total: pool.totalCount,
+      idle: pool.idleCount,
+      waiting: pool.waitingCount,
+    }),
     async stop() {
       await consumer.close();
       await queue.close();
