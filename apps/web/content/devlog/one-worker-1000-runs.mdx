@@ -1,0 +1,167 @@
+---
+title: "Twice the runs on one worker: optimizing hobai for 1,000 at once"
+date: 2026-11-02
+summary: One hobai worker on a 2 vCPU server now runs 1,000 tasks at once, and 908 succeed, up from 456. Here's what made the difference.
+draft: false
+---
+
+Every task you give hobai is a run, and the worker is what runs it: it creates the sandbox, drives the agent and opens the pull request. This week I set out to see how many runs one worker can handle at once, and then to raise that number.
+
+The result, on one 2 vCPU / 8 GB server, with 1,000 runs started within 30 seconds:
+
+| | Before | After |
+| --- | --- | --- |
+| Runs that succeeded | 456 | **908** |
+| Runs that failed | 492 | 89 |
+| Typical run time | 20 min | 9.5 min |
+| Queries waiting for a database connection | 895 | 7 |
+| Runs that lost events from their timeline | 533 | **0** |
+| Memory | 1.9 GB | 1.6 GB |
+
+At 500 runs at once, every run succeeds. Here's how it got there.
+
+## Why one worker should handle a lot
+
+The worker does almost none of the heavy work itself. The code runs in the sandbox, and the thinking happens at the model. The worker sends requests and waits for answers. Something that mostly waits should be able to wait on a lot of things at once, so I set the goal high: **1,000 runs on one small worker.**
+
+The catch is that Node runs JavaScript on one thread. Waiting is free, but every bit of work between the waits (handling a streamed token, writing an event, preparing the next model request) happens on that one thread, for every run. Multiply a small cost by 1,000 runs and it isn't small anymore. If the thread is busy for five seconds, every run waits five seconds.
+
+So the job was to find the work that grows with the number of runs, and cut it down.
+
+## Measuring it for free
+
+Starting 1,000 real runs means 1,000 sandboxes and a lot of model calls, several times over. hobai also has a rule that no automated test calls a paid service. So the load test fakes only those two parts and keeps everything else real:
+
+| Part | In the load test |
+| --- | --- |
+| The worker | The real one, in its own process, the only process measured |
+| The model | A fake OpenAI server that streams a recorded real response one token at a time, at a real model's speed, through the real OpenAI client |
+| The sandbox | A fake that takes 150 ms per call like a remote one, and returns output of realistic size |
+| Postgres and Redis | Real, with added network latency like the real ones |
+| The runs | A mix: most take 25–50 steps, a fifth take 100–145 with bigger outputs |
+
+Every second it records the worker's memory, CPU, how far behind its thread is, garbage collection, database connections, and how late live events reach the browser.
+
+All tests ran on the production server, next to the live app. That's harsher than real life: the fake model, the test database and the test driver all shared the same two CPUs with the worker.
+
+## 1. Live text in batches, not per token
+
+When the model writes, the browser shows its text live. The worker received it one token at a time, about 70 a second per run, and did the full work for each: build an event, check it, serialize it twice, publish it to Redis. For about four characters of text.
+
+Now each run collects its text and sends it in one piece every 100 ms:
+
+```ts
+if (event.type === "text_delta") {
+  if (text) {
+    text.delta += event.delta;
+  } else {
+    text = { ts: event.ts, delta: event.delta };
+    textTimer = setTimeout(sendText, 100);
+  }
+  return;
+}
+// Text gathered so far goes first, so events keep their order.
+sendText();
+```
+
+**10 sends a second per run instead of 70**, and a token in between costs a string append. You still see the text appear smoothly: at 100 ms it reads the same, and at 200 ms it would start to look jumpy.
+
+## 2. One event writer instead of one query per event
+
+Every stored event (a tool started, a tool finished, a stage changed) was its own INSERT. At 1,000 runs that's about a thousand small queries a second, all competing for 20 database connections. A query that waited too long failed, and its event was lost.
+
+Now each worker process has **one event writer, shared by every run.** Runs hand it their events and carry on. Every 50 ms it takes everything waiting and stores it in a few multi-row INSERTs, up to three at once. While one batch is being published, the next is already being stored.
+
+**A few queries a second instead of a thousand.** Queries waiting for a connection went from 895 to single digits.
+
+It's also safer than before:
+
+- **Nothing is lost.** A write that fails in a way that can pass (no free connection, a lost connection, the database restarting) is retried for up to a minute, instead of the event being dropped. Inserts skip rows already stored, so a retry is always harmless.
+- **Order holds.** Each run numbers its events when they happen, and the writer publishes batches in order, so you see a run's events exactly as they happened.
+- **Stored before shown.** If your browser reconnects, it replays the run from the database, so nothing it showed you can be missing there.
+- **Stale live text is skipped.** Under heavy load, live text that's more than 5 seconds old isn't sent, since the next piece replaces it anyway. Stored events are never skipped.
+- **A bad row only fails itself.** If the database refuses a batch, the writer splits it in half until only the bad row is left.
+
+The retry decision reads the Postgres error code. No code at all means the query never got an answer:
+
+```ts
+// No SQLSTATE means the query never got an answer (no free connection, connection lost).
+// Otherwise retry only what passes: connection (08), resources (53), shutdown (57), conflicts (40).
+export function isRetryable(error: unknown) {
+  const state = sqlState(error);
+  return state === undefined || /^(08|53|57|40)/.test(state);
+}
+```
+
+In the last test, **not one stored event was lost** across 1,000 runs and over 260,000 events.
+
+## 3. Context checks that cost one message, not the whole conversation
+
+Before each model call, the agent checks whether the conversation is getting too long for the model's context, and shortens old tool results if it is. The check redid everything each time: it rebuilt the shortened copy and serialized the whole conversation just to count its characters. A long run's conversation is hundreds of KB, so that's milliseconds per step, hundreds of steps a second.
+
+But a conversation only grows at its end. So now each message is measured once, the total is a running sum, and each message is shortened once. **A step costs the one or two messages it added**, however long the conversation is.
+
+The model has to see exactly the same messages as before, so a test runs the new code and the old code side by side over 150 steps and checks they agree at every step.
+
+## 4. Runs that can't finish stop using the CPU
+
+The job queue keeps a run alive while the worker renews its lock. Under heavy load, a renewal can arrive too late, and the queue gives up on the run. But nothing told the worker, so it kept spending CPU on runs that had already been given up on.
+
+The queue does say when it can't renew a lock. The worker now listens for that and stops the run's work right away, the same way the Stop button does. The cleanup job then ends it, saves its changes and parks its sandbox, just as it would after a crash. The CPU goes back to runs that can still finish.
+
+In the last two tests, **no run lost its lock at all**: with less work per token, per event and per step, renewals arrive on time.
+
+## 5. Only the result can fail a run
+
+A run updates its progress as it goes ("setting up", "verifying"). Under load, one of those updates could time out, and the run would fail at the very end because of it, after doing all its work.
+
+A progress label isn't worth failing a finished run over. Progress updates are now retried for up to 30 seconds, and one that still fails is logged and the run carries on. That alone turned over 300 failed runs into successful ones between the third and fourth tests.
+
+## 6. Errors that say why
+
+Each test run made the next fix easier, because the worker and the test learned to say more:
+
+- **The writer reports its state**: how much is waiting, the oldest wait, the slowest batch. When it fell behind in one test, the numbers showed exactly when and by how much.
+- **Logs show the real cause.** The database library wraps errors, so logs only said "Failed query". The actual reason was one level down, in the error's `cause`. Now the worker logs the whole chain:
+
+```ts
+export function describeError(error: unknown): string {
+  const parts: string[] = [];
+  let e: unknown = error;
+  while (e !== undefined && parts.length < MAX_CAUSES) {
+    parts.push(e instanceof Error ? e.message : String(e));
+    e = e instanceof Error ? e.cause : undefined;
+  }
+  return parts.join("; caused by: ");
+}
+```
+
+- **Lost events can't pass for hung runs.** Early on, 17 runs looked stuck. They had finished, but the event saying so was lost. The test now checks the database for any run that finished without telling it.
+
+With that in place, 426 failures in one test came down to a single line in the logs, and one fix.
+
+## Run by run
+
+Every test used the same command on the same server, so the numbers compare:
+
+| | Before | 2nd test | 3rd test | 4th test |
+| --- | --- | --- | --- | --- |
+| Succeeded | 456 | 686 | 570 | **908** |
+| Failed | 492 | 310 | 425 | 89 |
+| Typical run time | 20 min | 11 min | 10 min | 9.5 min |
+| Queries waiting for a connection | 895 | 4 | 7 | 7 |
+| Memory | 1.9 GB | 1.7 GB | 1.6 GB | 1.6 GB |
+
+The third test dipped because it uncovered the progress-label failure from section 5. Every other number held or improved, and the fourth test shows the effect of fixing it.
+
+## What's next
+
+- **The final write.** The remaining 89 failures are the run's result write timing out while the thread is busy. It will get the same retry as progress updates.
+- **A second worker process.** A Node process uses one CPU core, and the server has two. For the first ten minutes, while 1,000 runs start at once, one core is busy almost all the time. A second process gives each run twice the room.
+
+## What made the difference
+
+- **Find the work that grows with the number of runs.** Per token, per event and per step costs were tiny for one run. They were the whole problem at 1,000.
+- **Batch across runs, not within one.** One run writes about one event a second, so batching per run saves nothing. One writer for every run turned a thousand queries a second into a few.
+- **Fake only what costs money.** The real worker, the real model client and real databases found every one of these problems.
+- **Make every failure explain itself.** The tests got faster to read every time, and the fixes got faster to find.
