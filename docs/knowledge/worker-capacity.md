@@ -228,6 +228,7 @@ pnpm --filter @hobai/worker load --runs 100,250,500,1000 --profile mixed --max-h
 3. Bottleneck 5: the compactor check.
 4. Bottleneck 6: stop a run's work when its lock is lost.
 4a. The event writer's throughput, found by the second run (§5.1).
+4b. Run progress updates that failed runs, found by the third run (§5.2).
 5. ~~Bottleneck 4: store the compacted form.~~ Deferred (§2.4).
 6. The settings in §3: two processes, heap size, `WORKER_CONCURRENCY`.
 
@@ -251,4 +252,27 @@ The same command on the same VPS (`--label after-fixes-kvm2`). Fix 6 wasn't in t
 Against the baseline: the pool no longer queues (65 → 0 at 500, ~900 → 4 at 1,000), no `done` was lost, the 1,000 level finished instead of timing out, runs there took half as long (p50 1,214 → 640 s), and failures fell from 492 to 310. Event lag at low levels is ~100 ms, the text and writer batching.
 
 **What failed at 1,000: the event writer.** In minutes 4–7, with all 1,000 runs working, events reaching subscribers fell to 8–50 a second (200–500 in the baseline) and waited up to 281 s; GC took 36–60% of each second; in minutes 8–10 ~305 runs lost their queue lock and were failed. 427 runs logged "Some run events weren't saved or published", with no error text kept. The writer was one line, and the likeliest cause is a batch whose INSERT failed: retried for up to 60 s, or written row by row, with every run's events waiting behind it. Its backlog stayed in memory, GC grew, and lock renewals fell behind. The writer now takes whole backlogs, halves a refused batch instead of writing it row by row, overlaps rounds and drops stale live events (§2.3), and the harness records the writer's state and the warnings' error text, so the next run says what failed.
+
+### 5.2 With every fix in (2026-11-02)
+
+Only the 1,000 level (`--runs 1000 --label after-writer-kvm2`), fixes 2, 3, 5, 6 and 7 and the faster writer in.
+
+| | 1,000 runs |
+|---|---|
+| Outcomes | succeeded 570, failed 425, incomplete 5 |
+| Run time p50 / p99 | 617 / 1,809 s |
+| Heap peak | 1,639 MB |
+| CPU avg / peak | 69% / 185% of a core; ~145% in minutes 1–9 |
+| Event-loop delay p99 peak | 5,511 ms |
+| GC pause share | 9.7% |
+| Pool waiting peak | 7 |
+| Writer waiting peak / oldest wait / slowest round | 9,211 / 48.9 s / 26.7 s (minute 7) |
+| Writer retries / failed / live dropped | 11 / 0 / 11,174 |
+| Ended, `done` lost | 0 |
+
+**The writer held.** No stored event failed (11 retries, 0 given up), and "events weren't saved" no longer appears; the stale live events it dropped are text and progress older than 5 s. No run lost its queue lock.
+
+**Runs failed on a progress update.** All 426 "Work failed" carried `Failed query: update "runs" set "stage" = …` (most at `verify`). With the main thread saturated for minutes 1–9 (event-loop delay up to 5.5 s), queries ran past the pool's 2 s connection timeout. The run record queued progress updates (stage, sandbox) and `endRun` threw the first failure from `record.flush()`, so the run never recorded its result, its job failed, and the reaper ended it as `worker_lost`: runs that had done their work, failed over a progress label. The same would follow any short database blip, at any load. Fixed: progress updates are retried for up to 30 s, and one still failing is logged ("A run's progress wasn't saved") and doesn't fail the run; logs now include an error's causes (`describeError`), which drizzle's "Failed query" hides.
+
+**What's left is CPU.** One process's main thread was busy for the first ten minutes while 1,000 runs started within 30 s, with the fake OpenAI server (up to 65% of a core) and the test Postgres on the same two vCPUs. A second worker process (§3) is the next step, then this level again.
 

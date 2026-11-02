@@ -29,6 +29,7 @@ import {
   onboardingOutcome,
   type EndedOnboarding,
 } from "../onboardings/onboarding-record.js";
+import { describeError } from "../lib/describe-error.js";
 
 /** Waiting for answers included; the same reasoning as a run's RUN_TIME_LIMIT_MS. */
 export const SETUP_TIME_LIMIT_MS = 45 * 60_000;
@@ -91,7 +92,7 @@ export async function handleOnboardProject(
     sink.flush().catch((error: unknown) =>
       deps.log("warn", "Some setup events weren't saved or published", {
         onboardingId,
-        error: String(error),
+        error: describeError(error),
       }),
     );
 

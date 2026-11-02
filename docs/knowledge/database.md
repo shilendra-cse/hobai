@@ -165,7 +165,7 @@ One agent execution.
 | `trigger` | enum `run_trigger` (`initial`, `follow_up`, `pr_comment`, `retry`) | |
 | `status` | enum `run_status` (`queued`, `running`, `succeeded`, `incomplete`, `failed`, `cancelled`) | |
 | `stage` | enum `run_stage` (`prepare`, `checkout`, `setup`, `agent`, `verify`, `deliver`) null | current pipeline stage, for UI |
-| `sandbox_id` | text null | Docker, E2B or Daytona id; the reaper reconnects to it when the run's worker is gone |
+| `sandbox_id` | text null | Docker, E2B or Daytona id; the reaper reconnects to it when the run's worker is gone. Written, like `stage`, as the run goes; retried for up to 30 s, and one that still fails is logged rather than failing the run |
 | `environment_id` | uuid FK → `project_environments.id` null | the environment config version this run replayed; set null on delete |
 | `model` | text | model the run used |
 | `commit_sha` | text null | |

@@ -11,6 +11,7 @@ import type { Redis } from "ioredis";
 import { LockLostError } from "./lib/lock-lost.js";
 import type { Log } from "./lib/log.js";
 import type { AnswerRouter } from "./onboardings/answer-router.js";
+import { describeError } from "./lib/describe-error.js";
 
 export type Handlers = {
   [K in QueuedWorkKind]: (
@@ -63,7 +64,7 @@ export async function startConsumer(
         options.answers.deliver(JSON.parse(message) as OnboardingAnswerMessage);
       } catch (error) {
         log("warn", "Ignored an answer that couldn't be read", {
-          error: String(error),
+          error: describeError(error),
         });
       }
     }
@@ -127,7 +128,7 @@ export async function startConsumer(
     log("error", "Work failed", {
       kind: job?.name,
       id: job?.id,
-      error: error.message,
+      error: describeError(error),
     }),
   );
   // The queue has failed these (`maxStalledCount: 0`) and the reaper will end them, so going on

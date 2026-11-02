@@ -6,6 +6,7 @@ import {
 import type { OnboardingEventBody } from "@hobai/shared";
 import { createEventSink, onboardingEventTarget } from "../events/sink.js";
 import { PENDING, QUEUED_GRACE_MS, type LostRunsDeps } from "./lost-runs.js";
+import { describeError } from "../lib/describe-error.js";
 
 const REASONS = {
   worker_lost: "The worker setting it up stopped before setup finished.",
@@ -67,7 +68,7 @@ export async function failLostOnboardings(
     } catch (error) {
       deps.log("warn", "A lost setup's events weren't saved or published", {
         onboardingId,
-        error: String(error),
+        error: describeError(error),
       });
     }
     deps.log("warn", "Failed a lost setup", { onboardingId, code });

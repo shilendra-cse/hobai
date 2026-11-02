@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createEventWriter,
-  isRetryable,
   type EventRows,
   type WrittenEvent,
 } from "./event-writer.js";
+import { isRetryable } from "../lib/retry.js";
 
 const at = new Date("2026-11-01T10:00:00Z");
 const stored = (runId: string, seq: number): WrittenEvent => ({

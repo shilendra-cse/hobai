@@ -26,6 +26,7 @@ import { GithubAccessError, repoReadToken } from "../github/repo-token.js";
 import { lockLost } from "../lib/lock-lost.js";
 import type { Log } from "../lib/log.js";
 import type { SandboxFactory } from "../lib/sandbox-factory.js";
+import { describeError } from "../lib/describe-error.js";
 
 export type RunTaskDeps = {
   db: Db;
@@ -70,7 +71,7 @@ async function nameTask(
   } catch (error) {
     deps.log("warn", "The task's title wasn't saved", {
       runId: run.id,
-      error: String(error),
+      error: describeError(error),
     });
     return;
   }
@@ -108,7 +109,7 @@ async function endRun(
     } catch (error) {
       deps.log("warn", "The run's changes weren't saved", {
         runId: run.id,
-        error: String(error),
+        error: describeError(error),
       });
     }
   }
@@ -117,7 +118,7 @@ async function endRun(
   } catch (error) {
     deps.log("warn", "Some run events weren't saved or published", {
       runId: run.id,
-      error: String(error),
+      error: describeError(error),
     });
   }
   if (!(await run.record.finish(result))) {
@@ -144,7 +145,7 @@ async function stoppedLost(
   } catch (error) {
     deps.log("warn", "Some run events weren't saved or published", {
       runId,
-      error: String(error),
+      error: describeError(error),
     });
   }
   deps.log("warn", "Stopped a run whose queue lock was lost", { runId });
@@ -159,7 +160,7 @@ export async function handleRunTask(
   const { db } = deps;
   const run = await loadRun(db, runId);
   const { project } = run.task;
-  const record = createRunRecord(db, runId);
+  const record = createRunRecord(db, runId, { log: deps.log });
   const environments = new DbEnvironmentStore(db);
 
   const environment = await environments.load(project.id);
