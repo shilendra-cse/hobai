@@ -1,6 +1,6 @@
 # Worker capacity
 
-> Status: **Baseline measured, fixes in progress** · Last updated: 2026-11-01 · Code: `apps/worker`, `packages/agent` · Related: [architecture.md](./architecture.md) §10 "Capacity", [agent.md](./agent.md)
+> Status: **Fixes measured: 908 of 1,000 on one worker** · Last updated: 2026-11-02 · Code: `apps/worker`, `packages/agent` · Related: [architecture.md](./architecture.md) §10 "Capacity", [agent.md](./agent.md)
 
 The goal: **1,000 runs at once on one 2 vCPU / 8 GB VPS.** Everything heavy happens in the sandbox or at OpenAI; the worker only waits on them, so nothing it does should need much CPU or memory. This page lists what stops it today, found by reading the code and measured with the load harness (§4). Sandbox quota, OpenAI rate limits and spend caps are outside the worker and left out.
 
@@ -8,7 +8,7 @@ The costs in §2 are estimates from reading the code; §5 has what the baseline 
 
 ## 1. Where we are
 
-- **Today's limit: ~250 runs cleanly, 500 with multi-second lag, 1,000 fails** (§5). The event loop (bottlenecks 2 and 5) and the Postgres pool (bottleneck 3) give out first; when they do, healthy runs lose their queue lock and are failed (bottleneck 6). Memory isn't the limit: ~1.8 MB per active run, a third of the estimate.
+- **Today: all 500 runs succeed at 500, and 908 of 1,000 at 1,000** (§5.1, §5.3); the baseline managed 456 of 1,000 (§5). The remaining failures are the run's final result write timing out while the event loop is saturated; a retry would cover it, a second process (§3) adds headroom. Memory isn't the limit: ~1.6 MB per active run.
 - **Node uses one core.** JavaScript runs on a single event loop; one process can't use the second vCPU.
 - **The heap stops at ~2.2 GB.** V8 sets its limit from the machine's RAM (`v8.getHeapStatistics().heap_size_limit` is 2,240 MB on an 8 GB machine). The Dockerfile doesn't set `--max-old-space-size`, so the worker crashes with "JavaScript heap out of memory" while ~5 GB of RAM is unused.
 
@@ -276,3 +276,27 @@ Only the 1,000 level (`--runs 1000 --label after-writer-kvm2`), fixes 2, 3, 5, 6
 
 **What's left is CPU.** One process's main thread was busy for the first ten minutes while 1,000 runs started within 30 s, with the fake OpenAI server (up to 65% of a core) and the test Postgres on the same two vCPUs. A second worker process (§3) is the next step, then this level again.
 
+
+### 5.3 With the progress fix in (2026-11-02)
+
+The same 1,000 level (`--runs 1000 --label after-progress-kvm2`), with the progress updates from §5.2 retried.
+
+| | §5.2 | 1,000 runs |
+|---|---|---|
+| Outcomes | succeeded 570, failed 425, incomplete 5 | succeeded 908, failed 89, incomplete 3 |
+| Run time p50 / p99 | 617 / 1,809 s | 568 / 1,737 s |
+| Heap peak | 1,639 MB | 1,597 MB |
+| CPU avg / peak | 69% / 185% of a core | 62% / 181% of a core |
+| Event-loop delay p99 peak | 5,511 ms | 5,125 ms |
+| GC pause share / longest | 9.7% | 8.7% / 681 ms |
+| Pool waiting peak | 7 | 7 |
+| Writer waiting peak / oldest wait / slowest round | 9,211 / 48.9 s / 26.7 s | 4,038 / 21.3 s / 10.8 s |
+| Writer retries / failed / live dropped | 11 / 0 / 11,174 | 3 / 0 / 11,149 |
+| Event lag p50 / p99 / max | not recorded | 158 ms / 8.3 s / 19.4 s |
+| Ended, `done` lost | 0 | 0 |
+
+**Progress no longer fails runs.** 12 progress updates still failed after 30 s of retries; they were logged and their runs carried on.
+
+**What failed: the final result write.** All 82 "Work failed" carried `Failed query: update "runs" set "status" = …` (the run's result in `markRunEnded`), caused by `timeout exceeded when trying to connect`: with the event loop up to 5 s behind, a query waits past the pool's 2 s connection timeout (`connectionTimeoutMillis` in `packages/db/src/client.ts`) before it gets a connection. The run had done its work; its result wasn't recorded, so its job failed and the reaper ended it as `worker_lost`. Not fixed yet: retrying the final write like progress updates, and a longer connection timeout, would cover it.
+
+**Where this leaves one worker.** ~900 of 1,000 runs started within 30 s, on a VPS shared with the fake OpenAI server (up to 67% of a core), the test Postgres and the driver, so harsher than production. The main thread is still saturated for the first ~10 minutes; beyond the final-write retry, more headroom comes from a second worker process (§3).
