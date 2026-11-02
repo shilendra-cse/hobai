@@ -9,7 +9,11 @@ import { insertRun, testDatabaseOrSkip } from "@hobai/db/testing";
 import type { RunResult } from "@hobai/runner";
 import { eq } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
-import { createRunRecord, RunStateError } from "./run-record.js";
+import {
+  createRunRecord,
+  RunStateError,
+  type RunRecordOptions,
+} from "./run-record.js";
 
 const database = await testDatabaseOrSkip("run record");
 
@@ -39,7 +43,7 @@ describe.skipIf(!database)("run record against Postgres", () => {
   const row = async (runId: string) =>
     (await db.select().from(runs).where(eq(runs.id, runId)))[0]!;
 
-  async function newRun() {
+  async function newRun(options: Partial<RunRecordOptions> = {}) {
     const { project, run } = await insertRun(db);
     await new DbEnvironmentStore(db).save(
       project.id,
@@ -56,13 +60,13 @@ describe.skipIf(!database)("run record against Postgres", () => {
     });
     return {
       run,
-      record: createRunRecord(db, run.id),
+      record: createRunRecord(db, run.id, { log: () => {}, ...options }),
       environmentId: environment!.id,
     };
   }
 
-  async function startedRun() {
-    const created = await newRun();
+  async function startedRun(options: Partial<RunRecordOptions> = {}) {
+    const created = await newRun(options);
     await created.record.start(created.environmentId);
     return created;
   }
@@ -109,6 +113,81 @@ describe.skipIf(!database)("run record against Postgres", () => {
     expect(await row(run.id)).toMatchObject({
       stage: "agent",
       sandboxId: "sb-1",
+    });
+  });
+
+  describe("when its progress can't be saved at once", () => {
+    const noAnswer = () => new Error("timeout exceeded when trying to connect");
+    const stage = (s: "setup" | "agent") => ({
+      type: "stage_changed" as const,
+      runId: "r",
+      ts: "2026-11-02T10:00:00.000Z",
+      stage: s,
+    });
+
+    it("retries it until it's saved", async () => {
+      let calls = 0;
+      const { run, record } = await startedRun({
+        firstRetryMs: 1,
+        updateProgress: async (progress) => {
+          calls += 1;
+          if (calls < 3) throw noAnswer();
+          await db.update(runs).set(progress).where(eq(runs.id, run.id));
+        },
+      });
+
+      record.observe(stage("agent"));
+      await record.flush();
+
+      expect(calls).toBe(3);
+      expect((await row(run.id)).stage).toBe("agent");
+    });
+
+    it("logs one that keeps failing and still records the run's result", async () => {
+      const logs: { message: string; data?: Record<string, unknown> }[] = [];
+      const { run, record } = await startedRun({
+        firstRetryMs: 1,
+        retryForMs: 10,
+        log: (_level, message, data) => logs.push({ message, data }),
+        updateProgress: async () => {
+          throw new Error("Failed query: update runs", { cause: noAnswer() });
+        },
+      });
+
+      record.observe(stage("setup"));
+      await expect(record.flush()).resolves.toBeUndefined();
+      expect(await record.finish({ status: "succeeded", durationMs: 1 })).toBe(
+        true,
+      );
+
+      expect((await row(run.id)).status).toBe("succeeded");
+      expect(logs).toEqual([
+        {
+          message: "A run's progress wasn't saved",
+          data: {
+            runId: run.id,
+            progress: { stage: "setup" },
+            error:
+              "Failed query: update runs; caused by: timeout exceeded when trying to connect",
+          },
+        },
+      ]);
+    });
+
+    it("gives up at once on an error that won't pass", async () => {
+      let calls = 0;
+      const { record } = await startedRun({
+        firstRetryMs: 1,
+        updateProgress: async () => {
+          calls += 1;
+          throw Object.assign(new Error("invalid input"), { code: "22P02" });
+        },
+      });
+
+      record.observe(stage("agent"));
+      await record.flush();
+
+      expect(calls).toBe(1);
     });
   });
 

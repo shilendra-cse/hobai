@@ -8,6 +8,9 @@ import {
 import type { UsageSnapshot } from "@hobai/agent";
 import type { Diff, RunResult } from "@hobai/runner";
 import type { RunEvent } from "@hobai/shared";
+import { describeError } from "../lib/describe-error.js";
+import type { Log } from "../lib/log.js";
+import { tryWithRetries } from "../lib/retry.js";
 import { createSerialQueue } from "../lib/serial-queue.js";
 
 export class RunStateError extends Error {}
@@ -16,6 +19,7 @@ export type RunFailure = { code: string; message: string };
 
 export type RunRecord = {
   start(environmentId: string): Promise<void>;
+  /** Records the run's stage and sandbox as they change; one that can't be saved is logged, never fails the run. */
   observe(event: RunEvent): void;
   /** Model calls made outside the agent (e.g. the task's title), counted with the agent's. */
   addUsage(usage: UsageSnapshot): void;
@@ -53,8 +57,43 @@ export function runFailure(result: RunResult): RunFailure | null {
   return null;
 }
 
-export function createRunRecord(db: Db, runId: string): RunRecord {
+type Progress = Parameters<typeof updateRunProgress>[2];
+
+export type RunRecordOptions = {
+  log: Log;
+  updateProgress?: (progress: Progress) => Promise<void>;
+  retryForMs?: number;
+  firstRetryMs?: number;
+};
+
+// Long enough for a worker that's seconds behind, or a short database blip.
+const PROGRESS_RETRY_MS = 30_000;
+
+export function createRunRecord(
+  db: Db,
+  runId: string,
+  options: RunRecordOptions,
+): RunRecord {
   const updates = createSerialQueue();
+  const updateProgress =
+    options.updateProgress ??
+    ((progress: Progress) => updateRunProgress(db, runId, progress));
+  // The stage is shown while the run works and the sandbox lets the reaper keep a lost run's
+  // work, so they're retried; one still failing isn't worth failing the run for.
+  const saveProgress = (progress: Progress) =>
+    updates.add(async () => {
+      const error = await tryWithRetries(() => updateProgress(progress), {
+        retryForMs: options.retryForMs ?? PROGRESS_RETRY_MS,
+        firstRetryMs: options.firstRetryMs ?? 250,
+      });
+      if (error !== null) {
+        options.log("warn", "A run's progress wasn't saved", {
+          runId,
+          progress,
+          error: describeError(error),
+        });
+      }
+    });
   const extra = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
 
   return {
@@ -66,11 +105,9 @@ export function createRunRecord(db: Db, runId: string): RunRecord {
 
     observe(event) {
       if (event.type === "stage_changed") {
-        updates.add(() => updateRunProgress(db, runId, { stage: event.stage }));
+        saveProgress({ stage: event.stage });
       } else if (event.type === "sandbox_created") {
-        updates.add(() =>
-          updateRunProgress(db, runId, { sandboxId: event.sandboxId }),
-        );
+        saveProgress({ sandboxId: event.sandboxId });
       }
     },
 

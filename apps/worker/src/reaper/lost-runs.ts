@@ -12,6 +12,7 @@ import type { EventWriter } from "../events/event-writer.js";
 import { createEventSink, runEventTarget } from "../events/sink.js";
 import type { Log } from "../lib/log.js";
 import type { SandboxConnector } from "../lib/sandbox-factory.js";
+import { describeError } from "../lib/describe-error.js";
 
 // Covers the gap between inserting a run and queueing it, and a short Redis outage.
 export const QUEUED_GRACE_MS = 15 * 60_000;
@@ -121,7 +122,7 @@ export async function failLostRuns(deps: LostRunsDeps): Promise<LostRun[]> {
       } catch (error) {
         deps.log("warn", "A lost run's work couldn't be kept", {
           runId,
-          error: String(error),
+          error: describeError(error),
         });
       }
     }
@@ -139,7 +140,7 @@ export async function failLostRuns(deps: LostRunsDeps): Promise<LostRun[]> {
     } catch (error) {
       deps.log("warn", "A lost run's events weren't saved or published", {
         runId,
-        error: String(error),
+        error: describeError(error),
       });
     }
     deps.log("warn", "Failed a lost run", { runId, code });

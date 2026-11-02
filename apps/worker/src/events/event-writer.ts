@@ -6,6 +6,8 @@ import {
   type NewRunEvent,
 } from "@hobai/db";
 
+import { isRetryable, tryWithRetries } from "../lib/retry.js";
+
 export type Publisher = {
   publish(channel: string, message: string): Promise<unknown>;
 };
@@ -53,7 +55,6 @@ export type EventWriter = {
 export const EVENT_WRITE_MS = 50;
 const RETRY_FOR_MS = 60_000;
 const FIRST_RETRY_MS = 250;
-const LONGEST_RETRY_MS = 5_000;
 // 5 columns a row keeps one INSERT far under Postgres's 65,535 parameters.
 const MAX_ROWS = 1_000;
 // Of the pool's 20 connections, so other queries still get theirs.
@@ -70,22 +71,6 @@ export const dbEventRows =
       insertOnboardingEvents(db, onboarding),
     ]);
   };
-
-// Errors from Postgres carry a SQLSTATE; drizzle wraps them, so it's on the cause.
-function sqlState(error: unknown): string | undefined {
-  for (let e = error; e instanceof Error; e = e.cause) {
-    const code = (e as { code?: unknown }).code;
-    if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return code;
-  }
-  return undefined;
-}
-
-// No SQLSTATE means the query never got an answer (no free connection, connection lost).
-// Otherwise retry only what passes: connection (08), resources (53), shutdown (57), conflicts (40).
-export function isRetryable(error: unknown) {
-  const state = sqlState(error);
-  return state === undefined || /^(08|53|57|40)/.test(state);
-}
 
 type Waiting = WrittenEvent & {
   addedAt: number;
@@ -135,24 +120,12 @@ export function createEventWriter(
   const totals = { lastRoundMs: 0, retries: 0, failed: 0, dropped: 0 };
 
   /** The error it gave up on, or null once stored. */
-  async function storeWithRetry(rows: EventRows): Promise<unknown> {
-    const started = Date.now();
-    for (
-      let wait = firstRetryMs;
-      ;
-      wait = Math.min(wait * 2, LONGEST_RETRY_MS)
-    ) {
-      try {
-        await deps.store(rows);
-        return null;
-      } catch (error) {
-        if (!isRetryable(error) || Date.now() - started + wait > retryForMs)
-          return error;
-        totals.retries += 1;
-        await sleep(wait);
-      }
-    }
-  }
+  const storeWithRetry = (rows: EventRows) =>
+    tryWithRetries(() => deps.store(rows), {
+      retryForMs,
+      firstRetryMs,
+      onRetry: () => (totals.retries += 1),
+    });
 
   // A row Postgres refuses (e.g. its run was deleted) fails the whole INSERT; halving the
   // events until it's alone finds it in a few INSERTs, and only it fails.

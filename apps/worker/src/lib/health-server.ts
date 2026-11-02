@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Log } from "./log.js";
+import { describeError } from "./describe-error.js";
 
 export type HealthServer = { port: number; close(): Promise<void> };
 
@@ -18,7 +19,7 @@ export async function startHealthServer(
     check().then(
       () => res.writeHead(200).end("ok"),
       (error: unknown) => {
-        log("warn", "Health check failed", { error: String(error) });
+        log("warn", "Health check failed", { error: describeError(error) });
         res.writeHead(503).end("unavailable");
       },
     );
