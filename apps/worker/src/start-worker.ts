@@ -17,7 +17,11 @@ import { handleRunTask } from "./handlers/run-task.js";
 import type { Log } from "./lib/log.js";
 import type { SandboxFactory } from "./lib/sandbox-factory.js";
 import { createAnswerRouter } from "./onboardings/answer-router.js";
-import { createEventWriter, dbEventRows } from "./events/event-writer.js";
+import {
+  createEventWriter,
+  dbEventRows,
+  type EventWriterStats,
+} from "./events/event-writer.js";
 import { handleReap } from "./reaper/reap.js";
 import { scheduleReaper } from "./reaper/schedule.js";
 
@@ -35,6 +39,8 @@ export type RunningWorker = {
   check(): Promise<void>;
   /** The database pool's connections, and queries waiting for one. */
   poolStats(): { total: number; idle: number; waiting: number };
+  /** How far behind the event writer is. */
+  writerStats(): EventWriterStats;
   /** Stops taking new work, waits for the work in progress, then closes the connections. */
   stop(): Promise<void>;
 };
@@ -117,6 +123,7 @@ export async function startWorker(
       await pingDatabase(db);
       await redis.queue.ping();
     },
+    writerStats: () => events.stats(),
     poolStats: () => ({
       total: pool.totalCount,
       idle: pool.idleCount,

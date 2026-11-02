@@ -160,7 +160,7 @@ Client opens the SSE stream for `run.id`.
 ### 4.3 Live events
 ```
 worker emit(e):   sink numbers it (seq) → event writer, shared by every run
-event writer:     every 50 ms: one INSERT for all runs' waiting events → PUBLISH each, in order
+event writer:     every 50 ms: INSERT everything waiting (chunks of 1,000, 3 at a time) → PUBLISH each, in order
 server SSE:       SUBSCRIBE first → replay run_events after Last-Event-ID → forward live (dedupe by id)
                   heartbeat 15s; close on done/error
 ```

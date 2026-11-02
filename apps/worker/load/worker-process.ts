@@ -24,6 +24,7 @@ const worker = await startWorker(config, log, {
 const stopProbe = startWorkerProbe({
   intervalMs: 1_000,
   poolStats: worker.poolStats,
+  writerStats: worker.writerStats,
   send: (sample) => send({ type: "worker-sample", sample }),
 });
 send({ type: "ready" });
