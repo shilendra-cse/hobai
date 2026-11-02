@@ -9,6 +9,7 @@ The costs in §2 are estimates from reading the code; §5 has what the baseline 
 ## 1. Where we are
 
 - **Today: all 500 runs succeed at 500, and 908 of 1,000 at 1,000** (§5.1, §5.3); the baseline managed 456 of 1,000 (§5). The remaining failures are the run's final result write timing out while the event loop is saturated; a retry would cover it, a second process (§3) adds headroom. Memory isn't the limit: ~1.6 MB per active run.
+- **Planning figure: 600 runs per worker process.** Comfortably under where failures start; scale with more processes when it's needed.
 - **Node uses one core.** JavaScript runs on a single event loop; one process can't use the second vCPU.
 - **The heap stops at ~2.2 GB.** V8 sets its limit from the machine's RAM (`v8.getHeapStatistics().heap_size_limit` is 2,240 MB on an 8 GB machine). The Dockerfile doesn't set `--max-old-space-size`, so the worker crashes with "JavaScript heap out of memory" while ~5 GB of RAM is unused.
 
