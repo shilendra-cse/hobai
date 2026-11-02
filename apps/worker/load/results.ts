@@ -21,11 +21,20 @@ export type LevelSummary = {
     gcMaxPauseMs: number;
     poolWaitingPeak: number;
   };
+  writer: {
+    waitingPeak: number;
+    oldestWaitPeakMs: number;
+    roundPeakMs: number;
+    retries: number;
+    failed: number;
+    dropped: number;
+  };
   fakeCpuPeakPercent: number;
   events: LevelResult["events"] & { perSecondPeak: number };
   unpublished: number;
   doneLost: number;
   warnings: Record<string, number>;
+  warningErrors: Record<string, string[]>;
 };
 
 const peak = (values: number[]) => (values.length ? Math.max(...values) : 0);
@@ -59,6 +68,15 @@ export function summarize(result: LevelResult): LevelSummary {
       gcMaxPauseMs: peak(workers.map((w) => w.gc.maxPauseMs)),
       poolWaitingPeak: peak(workers.map((w) => w.pool.waiting)),
     },
+    // A level starts its own worker, so its totals are the level's.
+    writer: {
+      waitingPeak: peak(workers.map((w) => w.writer.waiting)),
+      oldestWaitPeakMs: peak(workers.map((w) => w.writer.oldestWaitMs)),
+      roundPeakMs: peak(workers.map((w) => w.writer.lastRoundMs)),
+      retries: workers.at(-1)?.writer.retries ?? 0,
+      failed: workers.at(-1)?.writer.failed ?? 0,
+      dropped: workers.at(-1)?.writer.dropped ?? 0,
+    },
     fakeCpuPeakPercent: peak(
       result.samples.flatMap((s) => (s.fake ? [s.fake.cpuPercent] : [])),
     ),
@@ -69,6 +87,7 @@ export function summarize(result: LevelResult): LevelSummary {
     unpublished: result.unpublished,
     doneLost: result.doneLost,
     warnings: result.warnings,
+    warningErrors: result.warningErrors,
   };
 }
 
@@ -106,6 +125,15 @@ const ROWS: [string, (s: LevelSummary) => string | number][] = [
   ],
   ["Pool waiting peak", (s) => s.worker.poolWaitingPeak],
   [
+    "Writer waiting peak / oldest wait / slowest round",
+    (s) =>
+      `${s.writer.waitingPeak} / ${s.writer.oldestWaitPeakMs} / ${s.writer.roundPeakMs} ms`,
+  ],
+  [
+    "Writer retries / failed / live dropped",
+    (s) => `${s.writer.retries} / ${s.writer.failed} / ${s.writer.dropped}`,
+  ],
+  [
     "Events / peak per second",
     (s) => `${s.events.total} / ${s.events.perSecondPeak}`,
   ],
@@ -135,6 +163,18 @@ export function summaryTable(summaries: LevelSummary[]) {
   return [header, divider, ...rows].join("\n");
 }
 
+function warningErrorsList(summaries: LevelSummary[]) {
+  const lines = summaries.flatMap((s) =>
+    Object.entries(s.warningErrors)
+      .filter(([, errors]) => errors.length > 0)
+      .map(
+        ([warning, errors]) =>
+          `- ${s.runs} runs, ${warning}: ${errors.map((e) => `\`${e}\``).join("; ")}`,
+      ),
+  );
+  return lines.length ? `\n## Warning errors\n\n${lines.join("\n")}\n` : "";
+}
+
 export function createResults(dir: string) {
   mkdirSync(dir, { recursive: true });
   const samples = path.join(dir, "samples.jsonl");
@@ -152,7 +192,7 @@ export function createResults(dir: string) {
       );
       writeFileSync(
         path.join(dir, "summary.md"),
-        `# Load test\n\n\`\`\`json\n${JSON.stringify(settings, null, 2)}\n\`\`\`\n\n${summaryTable(summaries)}\n`,
+        `# Load test\n\n\`\`\`json\n${JSON.stringify(settings, null, 2)}\n\`\`\`\n\n${summaryTable(summaries)}\n${warningErrorsList(summaries)}`,
       );
     },
   };

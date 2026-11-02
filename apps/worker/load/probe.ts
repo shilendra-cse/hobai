@@ -29,10 +29,11 @@ export function processSampler(): () => ProcessSample {
   });
 }
 
-/** Samples the worker process every interval: memory, CPU, event-loop delay, GC and the database pool. */
+/** Samples the worker process every interval: memory, CPU, event-loop delay, GC, the database pool and the event writer. */
 export function startWorkerProbe(options: {
   intervalMs: number;
   poolStats: () => WorkerSample["pool"];
+  writerStats: () => WorkerSample["writer"];
   send: (sample: WorkerSample) => void;
 }) {
   const base = processSampler();
@@ -67,6 +68,7 @@ export function startWorkerProbe(options: {
         maxPauseMs: round(gc.maxPauseMs),
       },
       pool: options.poolStats(),
+      writer: options.writerStats(),
     });
     loop.reset();
     Object.assign(gc, { count: 0, pauseMs: 0, maxPauseMs: 0 });

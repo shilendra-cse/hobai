@@ -70,13 +70,15 @@ Numbered in the order they were found; §5 has which ones the baseline hit.
 
 **When it's full, events are lost.** A query waiting over `connectionTimeoutMillis: 2_000` throws; the event is neither stored nor published; the run goes on and `flush()` logs "Some run events weren't saved or published". The run's timeline has a hole.
 
-**Fix (built).** One event writer per process (`events/event-writer.ts`), shared by every run and setup. Sinks number and redact events as before and hand them over at once; every 50 ms (`EVENT_WRITE_MS`) the writer stores what's waiting in one multi-row INSERT per table (up to 1,000 rows), then publishes each event in order. About 20 queries a second instead of one per event, on one connection at a time. Batching per run wouldn't help: one run has ~1 event a second.
+**Fix (built).** One event writer per process (`events/event-writer.ts`), shared by every run and setup. Sinks number and redact events as before and hand them over at once; every 50 ms (`EVENT_WRITE_MS`) the writer takes everything waiting, stores it in multi-row INSERTs of up to 1,000 rows (up to 3 at a time), then publishes each event in order. While a round publishes, the next one gathers and stores; its publishing waits for the round before, so order holds. A few queries a second instead of one per event. Batching per run wouldn't help: one run has ~1 event a second.
 
 - **Stored before published**, as before: a browser that reconnects replays from Postgres by `seq`.
 - **Live-only events go through it too** (`text_delta`, `agent_step`), only published, so a run's events can't overtake each other.
-- **Retried, not dropped.** A write that gets no answer (no free connection, connection lost) or fails on connection, resources, shutdown or a conflict (SQLSTATE 08, 53, 57, 40) is retried with growing waits (0.25 s, doubling, at most 5 s) for up to 60 s; later events wait behind it. Inserts skip rows already stored (`ON CONFLICT DO NOTHING`), so a retry after a write that did get through is harmless. A row Postgres refuses (e.g. its run was deleted) fails the batch's INSERT, so then each row is written alone and only it fails.
+- **Retried, not dropped.** A write that gets no answer (no free connection, connection lost) or fails on connection, resources, shutdown or a conflict (SQLSTATE 08, 53, 57, 40) is retried with growing waits (0.25 s, doubling, at most 5 s) for up to 60 s; later events wait behind it. Inserts skip rows already stored (`ON CONFLICT DO NOTHING`), so a retry after a write that did get through is harmless. A row Postgres refuses (e.g. its run was deleted) fails its INSERT, so the rows are halved until it's alone: a few INSERTs, and only it fails.
 - **Given up after 60 s**, its stored events are neither stored nor published and `flush()` reports it, as before. Later events are already numbered, so the timeline has a gap but keeps its order.
+- **Stale live events are dropped.** Text and step progress that waited over 5 s are resolved without being sent: they're only shown live and the next one replaces them. Stored events are never dropped.
 - Live events arrive up to ~50 ms later.
+- **Measured by the harness:** the writer's waiting events, oldest wait, slowest round, retries, failures and dropped live events, and the error text of the worker's warnings.
 
 **Measured.** Up to 65 queries waiting for a connection at 500 runs and ~900 at 1,000, where 533 runs logged "Some run events weren't saved or published" (§5).
 
@@ -221,7 +223,28 @@ pnpm --filter @hobai/worker load --runs 100,250,500,1000 --profile mixed --max-h
 2. Bottleneck 3, with 7: one event writer that retries instead of dropping.
 3. Bottleneck 5: the compactor check.
 4. Bottleneck 6: stop a run's work when its lock is lost.
+4a. The event writer's throughput, found by the second run (§5.1).
 5. ~~Bottleneck 4: store the compacted form.~~ Deferred (§2.4).
 6. The settings in §3: two processes, heap size, `WORKER_CONCURRENCY`.
 
 Each fix is measured against this baseline with the same command.
+
+### 5.1 After fixes 2, 3, 5 and 7 (2026-11-01)
+
+The same command on the same VPS (`--label after-fixes-kvm2`). Fix 6 wasn't in this run: its PR was still open.
+
+| | 100 runs | 250 runs | 500 runs | 1,000 runs |
+|---|---|---|---|---|
+| Outcomes | succeeded 100 | succeeded 250 | succeeded 500 | succeeded 686, failed 310, incomplete 4 |
+| Run time p50 / p99 | 363 / 1,505 s | 353 / 1,549 s | 373 / 1,520 s | 640 / 1,783 s |
+| Heap peak | 369 MB | 612 MB | 954 MB | 1,694 MB |
+| Event-loop delay p99 peak | 14 ms | 23 ms | 2,027 ms | 3,915 ms |
+| GC pause share | 0.2% | 0.5% | 1.7% | 11.2% |
+| Pool waiting peak | 0 | 0 | 0 | 4 |
+| Event lag p99 / max | 160 / 228 ms | 162 / 1,577 ms | 671 / 2,568 ms | ≥ 60 s / 281 s |
+| Ended, `done` lost | 0 | 0 | 0 | 0 |
+
+Against the baseline: the pool no longer queues (65 → 0 at 500, ~900 → 4 at 1,000), no `done` was lost, the 1,000 level finished instead of timing out, runs there took half as long (p50 1,214 → 640 s), and failures fell from 492 to 310. Event lag at low levels is ~100 ms, the text and writer batching.
+
+**What failed at 1,000: the event writer.** In minutes 4–7, with all 1,000 runs working, events reaching subscribers fell to 8–50 a second (200–500 in the baseline) and waited up to 281 s; GC took 36–60% of each second; in minutes 8–10 ~305 runs lost their queue lock and were failed. 427 runs logged "Some run events weren't saved or published", with no error text kept. The writer was one line, and the likeliest cause is a batch whose INSERT failed: retried for up to 60 s, or written row by row, with every run's events waiting behind it. Its backlog stayed in memory, GC grew, and lock renewals fell behind. The writer now takes whole backlogs, halves a refused batch instead of writing it row by row, overlaps rounds and drops stale live events (§2.3), and the harness records the writer's state and the warnings' error text, so the next run says what failed.
+

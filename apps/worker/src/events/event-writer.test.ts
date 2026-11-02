@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createEventWriter,
   isRetryable,
@@ -127,6 +127,127 @@ describe("event writer", () => {
 
     expect(log).toEqual(["store a#1", "publish a#1"]);
     await written;
+  });
+});
+
+describe("event writer under load", () => {
+  const publisher = (log: string[]) => ({
+    async publish(_channel: string, message: string) {
+      log.push(message);
+      return 1;
+    },
+  });
+
+  it("finds the rows Postgres refuses by halving, failing only them", async () => {
+    let inserts = 0;
+    const store = async (rows: EventRows) => {
+      inserts += 1;
+      if (rows.run.some((r) => r.runId === "gone")) throw pgError("23503");
+    };
+    const writer = createEventWriter(
+      { store, publisher: publisher([]) },
+      { writeMs: 1 },
+    );
+    const events = Array.from({ length: 1_000 }, (_, i) =>
+      stored(i === 100 || i === 700 ? "gone" : "a", i),
+    );
+
+    const results = await Promise.allSettled(events.map((e) => writer.add(e)));
+
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(2);
+    expect(inserts).toBeLessThan(45);
+    expect(writer.stats().failed).toBe(2);
+  });
+
+  it("writes a whole backlog in one round, in INSERTs of up to 1,000 rows, in order", async () => {
+    const sizes: number[] = [];
+    const sent: string[] = [];
+    const writer = createEventWriter(
+      {
+        store: async (rows) => void sizes.push(rows.run.length),
+        publisher: publisher(sent),
+      },
+      { writeMs: 1 },
+    );
+    const events = Array.from({ length: 5_000 }, (_, i) => stored("a", i));
+
+    await Promise.all(events.map((e) => writer.add(e)));
+
+    expect(sizes).toEqual([1_000, 1_000, 1_000, 1_000, 1_000]);
+    expect(sent).toEqual(events.map((e) => e.message));
+  });
+
+  it("stores the next round while this one publishes, keeping the order", async () => {
+    const log: string[] = [];
+    let release!: () => void;
+    const slow = new Promise<void>((r) => (release = r));
+    const writer = createEventWriter(
+      {
+        store: async (rows) =>
+          void log.push(`store ${rows.run.map((r) => r.seq).join(",")}`),
+        publisher: {
+          async publish(_channel, message) {
+            if (message === "a#1") await slow;
+            log.push(`publish ${message}`);
+            return 1;
+          },
+        },
+      },
+      { writeMs: 1 },
+    );
+
+    const first = writer.add(stored("a", 1));
+    await vi.waitFor(() => expect(log).toEqual(["store 1"]));
+    const second = writer.add(stored("a", 2));
+    await vi.waitFor(() => expect(log).toEqual(["store 1", "store 2"]));
+    release();
+    await Promise.all([first, second]);
+
+    expect(log).toEqual(["store 1", "store 2", "publish a#1", "publish a#2"]);
+  });
+
+  it("drops live events that waited too long, never stored ones", async () => {
+    const sent: string[] = [];
+    const writer = createEventWriter(
+      {
+        store: () => new Promise((r) => setTimeout(r, 40)),
+        publisher: publisher(sent),
+      },
+      { writeMs: 1, staleLiveMs: 20 },
+    );
+
+    await Promise.all([
+      writer.add(live("a", "old text")),
+      writer.add(stored("a", 1)),
+    ]);
+
+    expect(sent).toEqual(["a#1"]);
+    expect(writer.stats()).toMatchObject({ dropped: 1, waiting: 0 });
+  });
+
+  it("tells how far behind it is, counting a round still being stored", async () => {
+    let release!: () => void;
+    const stuck = new Promise<void>((r) => (release = r));
+    let storing = false;
+    const writer = createEventWriter(
+      {
+        store: async () => {
+          storing = true;
+          await stuck;
+        },
+        publisher: publisher([]),
+      },
+      { writeMs: 1 },
+    );
+
+    const written = writer.add(stored("a", 1));
+    await vi.waitFor(() => expect(storing).toBe(true));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(writer.stats().waiting).toBe(1);
+    expect(writer.stats().oldestWaitMs).toBeGreaterThanOrEqual(20);
+    release();
+    await written;
+    expect(writer.stats()).toMatchObject({ waiting: 0, oldestWaitMs: 0 });
   });
 });
 

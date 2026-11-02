@@ -17,6 +17,14 @@ export const workerSample = processSample.extend({
     maxPauseMs: z.number(),
   }),
   pool: z.object({ total: z.number(), idle: z.number(), waiting: z.number() }),
+  writer: z.object({
+    waiting: z.number(),
+    oldestWaitMs: z.number(),
+    lastRoundMs: z.number(),
+    retries: z.number(),
+    failed: z.number(),
+    dropped: z.number(),
+  }),
 });
 
 export type ProcessSample = z.infer<typeof processSample>;

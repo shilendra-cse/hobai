@@ -64,6 +64,8 @@ export type LevelResult = {
   /** Runs ended in Postgres whose `done` was never published. */
   doneLost: number;
   warnings: Record<string, number>;
+  /** The first few errors each warning carried. */
+  warningErrors: Record<string, string[]>;
 };
 
 const runEvent = z.looseObject({
@@ -74,7 +76,12 @@ const runEvent = z.looseObject({
   status: z.string().optional(),
 });
 
-const logLine = z.looseObject({ level: z.number(), msg: z.string() });
+const logLine = z.looseObject({
+  level: z.number(),
+  msg: z.string(),
+  error: z.string().optional(),
+});
+const EXAMPLES_PER_WARNING = 3;
 const WARN = 40;
 
 type Tracked = {
@@ -113,6 +120,7 @@ export async function runLevel(options: LevelOptions): Promise<LevelResult> {
   let secondEvents = 0;
   let workerSample: WorkerSample | null = null;
   const warnings: Record<string, number> = {};
+  const warningErrors: Record<string, string[]> = {};
 
   const onEvent = (_pattern: string, _channel: string, message: string) => {
     const parsed = runEvent.safeParse(safeJson(message));
@@ -158,7 +166,15 @@ export async function runLevel(options: LevelOptions): Promise<LevelResult> {
     onOutput: (line) => {
       const parsed = logLine.safeParse(safeJson(line));
       if (parsed.success && parsed.data.level >= WARN) {
-        warnings[parsed.data.msg] = (warnings[parsed.data.msg] ?? 0) + 1;
+        const { msg, error } = parsed.data;
+        warnings[msg] = (warnings[msg] ?? 0) + 1;
+        const errors = (warningErrors[msg] ??= []);
+        if (
+          error &&
+          errors.length < EXAMPLES_PER_WARNING &&
+          !errors.includes(error)
+        )
+          errors.push(error);
       }
     },
   });
@@ -294,6 +310,7 @@ export async function runLevel(options: LevelOptions): Promise<LevelResult> {
     unpublished,
     doneLost,
     warnings,
+    warningErrors,
   };
 }
 

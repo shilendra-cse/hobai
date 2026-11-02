@@ -27,9 +27,24 @@ export type WrittenEvent = {
 };
 
 /** One per process: stores the events of every run and setup together, then publishes them. */
+export type EventWriterStats = {
+  /** Events not yet published (waiting, or in a round being stored). */
+  waiting: number;
+  /** How long the oldest of them has waited. */
+  oldestWaitMs: number;
+  /** How long the last round took, from storing to the last publish. */
+  lastRoundMs: number;
+  /** Totals since the start. */
+  retries: number;
+  failed: number;
+  dropped: number;
+};
+
+/** One per process: stores the events of every run and setup together, then publishes them. */
 export type EventWriter = {
-  /** Resolves once the event is stored (when it's stored at all) and published. */
+  /** Resolves once the event is stored (when it's stored at all) and published, or dropped as stale. */
   add(event: WrittenEvent): Promise<void>;
+  stats(): EventWriterStats;
   /** Writes what's waiting. */
   close(): Promise<void>;
 };
@@ -40,7 +55,12 @@ const RETRY_FOR_MS = 60_000;
 const FIRST_RETRY_MS = 250;
 const LONGEST_RETRY_MS = 5_000;
 // 5 columns a row keeps one INSERT far under Postgres's 65,535 parameters.
-const MAX_BATCH = 1_000;
+const MAX_ROWS = 1_000;
+// Of the pool's 20 connections, so other queries still get theirs.
+const PARALLEL_INSERTS = 3;
+// Text and step progress are only shown live, and the next one replaces them; ones this old
+// are dropped rather than sent, so a backlog clears faster.
+const STALE_LIVE_MS = 5_000;
 
 export const dbEventRows =
   (db: Db) =>
@@ -68,6 +88,7 @@ export function isRetryable(error: unknown) {
 }
 
 type Waiting = WrittenEvent & {
+  addedAt: number;
   resolve: () => void;
   reject: (error: unknown) => void;
 };
@@ -83,6 +104,13 @@ function rowsOf(events: Waiting[]): EventRows {
   return rows;
 }
 
+function chunks<T>(items: T[], size: number) {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size)
+    out.push(items.slice(i, i + size));
+  return out;
+}
+
 export function createEventWriter(
   deps: {
     store: (rows: EventRows) => Promise<void>;
@@ -92,14 +120,19 @@ export function createEventWriter(
     writeMs?: number;
     retryForMs?: number;
     firstRetryMs?: number;
+    staleLiveMs?: number;
   } = {},
 ): EventWriter {
   const writeMs = options.writeMs ?? EVENT_WRITE_MS;
   const retryForMs = options.retryForMs ?? RETRY_FOR_MS;
   const firstRetryMs = options.firstRetryMs ?? FIRST_RETRY_MS;
-  const waiting: Waiting[] = [];
+  const staleLiveMs = options.staleLiveMs ?? STALE_LIVE_MS;
+  let waiting: Waiting[] = [];
+  // Rounds taken but not yet published: still behind, for the stats.
+  const inRounds = new Set<Waiting[]>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let writing: Promise<void> | undefined;
+  const totals = { lastRoundMs: 0, retries: 0, failed: 0, dropped: 0 };
 
   /** The error it gave up on, or null once stored. */
   async function storeWithRetry(rows: EventRows): Promise<unknown> {
@@ -115,46 +148,92 @@ export function createEventWriter(
       } catch (error) {
         if (!isRetryable(error) || Date.now() - started + wait > retryForMs)
           return error;
+        totals.retries += 1;
         await sleep(wait);
       }
     }
   }
 
-  // Which events couldn't be stored, and why. A row Postgres refuses (e.g. its run was
-  // deleted) fails the whole INSERT, so then each row is tried alone and only it fails.
+  // A row Postgres refuses (e.g. its run was deleted) fails the whole INSERT; halving the
+  // events until it's alone finds it in a few INSERTs, and only it fails.
+  async function storeEvents(events: Waiting[], failed: Map<Waiting, unknown>) {
+    const error = await storeWithRetry(rowsOf(events));
+    if (error === null) return;
+    if (isRetryable(error) || events.length === 1) {
+      for (const event of events) failed.set(event, error);
+      return;
+    }
+    const half = Math.ceil(events.length / 2);
+    await storeEvents(events.slice(0, half), failed);
+    await storeEvents(events.slice(half), failed);
+  }
+
+  /** Which events couldn't be stored, and why. */
   async function store(batch: Waiting[]) {
     const failed = new Map<Waiting, unknown>();
-    const stored = batch.filter((event) => event.store);
-    if (stored.length === 0) return failed;
-    const error = await storeWithRetry(rowsOf(stored));
-    if (error === null) return failed;
-    if (isRetryable(error)) {
-      for (const event of stored) failed.set(event, error);
-      return failed;
+    const groups = chunks(
+      chunks(
+        batch.filter((event) => event.store),
+        MAX_ROWS,
+      ),
+      PARALLEL_INSERTS,
+    );
+    for (const group of groups) {
+      await Promise.all(group.map((events) => storeEvents(events, failed)));
     }
-    for (const event of stored) {
-      const alone = await storeWithRetry(rowsOf([event]));
-      if (alone !== null) failed.set(event, alone);
-    }
+    totals.failed += failed.size;
     return failed;
   }
 
+  // One connection sends them in order, so each channel gets its events in order. The round
+  // leaves the stats before its events are settled, so a settled event is never counted behind.
+  async function publish(batch: Waiting[], failed: Map<Waiting, unknown>) {
+    const now = Date.now();
+    const outcomes = await Promise.all(
+      batch.map(async (event): Promise<{ error: unknown } | null> => {
+        if (failed.has(event)) return { error: failed.get(event) };
+        if (!event.store && now - event.addedAt > staleLiveMs) {
+          totals.dropped += 1;
+          return null;
+        }
+        try {
+          await deps.publisher.publish(event.channel, event.message);
+          return null;
+        } catch (error) {
+          return { error };
+        }
+      }),
+    );
+    inRounds.delete(batch);
+    batch.forEach((event, i) => {
+      const outcome = outcomes[i];
+      if (outcome) event.reject(outcome.error);
+      else event.resolve();
+    });
+  }
+
+  // Each round takes everything waiting. While a round publishes, the next one gathers and
+  // stores; its publishing waits for this round's, so order holds.
   async function writeAll() {
-    while (waiting.length > 0) {
-      const batch = waiting.splice(0, MAX_BATCH);
+    let published: Promise<void> = Promise.resolve();
+    let publishing = false;
+    for (;;) {
+      if (waiting.length === 0) {
+        if (!publishing) return;
+        await Promise.race([published, sleep(writeMs)]);
+        continue;
+      }
+      const batch = waiting;
+      waiting = [];
+      inRounds.add(batch);
+      const started = Date.now();
       const failed = await store(batch);
-      // One connection sends them in order, so each channel gets its events in order.
-      await Promise.all(
-        batch.map(async (event) => {
-          if (failed.has(event)) return event.reject(failed.get(event));
-          try {
-            await deps.publisher.publish(event.channel, event.message);
-            event.resolve();
-          } catch (error) {
-            event.reject(error);
-          }
-        }),
-      );
+      await published;
+      publishing = true;
+      published = publish(batch, failed).then(() => {
+        totals.lastRoundMs = Date.now() - started;
+        publishing = false;
+      });
     }
   }
 
@@ -169,9 +248,18 @@ export function createEventWriter(
   return {
     add(event) {
       return new Promise((resolve, reject) => {
-        waiting.push({ ...event, resolve, reject });
+        waiting.push({ ...event, addedAt: Date.now(), resolve, reject });
         if (!writing && !timer) timer = setTimeout(start, writeMs);
       });
+    },
+    stats: () => {
+      const behind = [...inRounds, waiting].filter((b) => b.length > 0);
+      const oldest = Math.min(...behind.map((b) => b[0]!.addedAt));
+      return {
+        waiting: behind.reduce((sum, b) => sum + b.length, 0),
+        oldestWaitMs: behind.length ? Date.now() - oldest : 0,
+        ...totals,
+      };
     },
     async close() {
       while (writing || timer) {
