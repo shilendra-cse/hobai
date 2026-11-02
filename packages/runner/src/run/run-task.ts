@@ -26,7 +26,8 @@ export type RunTaskOptions = {
   baselineChecks?: boolean;
   emit?: Emit;
   signal?: AbortSignal;
-  keepSandbox?: boolean;
+  /** A function is asked when the run ends, e.g. to keep it only when the run was stopped a certain way. */
+  keepSandbox?: boolean | (() => boolean);
   createSandbox?: () => Promise<Sandbox>;
   /** Runs right after checkout, before setup (e.g. evals pin a commit or plant a bug). */
   afterCheckout?: (sandbox: Sandbox) => Promise<void>;
@@ -216,6 +217,10 @@ export async function runTask(options: RunTaskOptions): Promise<RunResult> {
     };
   } finally {
     clearTimeout(timer);
-    if (!options.keepSandbox) await sandbox.destroy().catch(() => {});
+    const keep =
+      typeof options.keepSandbox === "function"
+        ? options.keepSandbox()
+        : options.keepSandbox;
+    if (!keep) await sandbox.destroy().catch(() => {});
   }
 }

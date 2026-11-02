@@ -23,6 +23,7 @@ import {
 } from "../runs/run-record.js";
 import { deliverToGithub } from "../delivery/deliver.js";
 import { GithubAccessError, repoReadToken } from "../github/repo-token.js";
+import { lockLost } from "../lib/lock-lost.js";
 import type { Log } from "../lib/log.js";
 import type { SandboxFactory } from "../lib/sandbox-factory.js";
 
@@ -131,6 +132,25 @@ async function endRun(
   }
 }
 
+// The queue gave the run's lock away and the reaper ends it, so nothing is recorded here: no
+// outcome, no `done`, no delivery.
+async function stoppedLost(
+  deps: Pick<RunTaskDeps, "log">,
+  runId: string,
+  sink: EventSink,
+) {
+  try {
+    await sink.flush();
+  } catch (error) {
+    deps.log("warn", "Some run events weren't saved or published", {
+      runId,
+      error: String(error),
+    });
+  }
+  deps.log("warn", "Stopped a run whose queue lock was lost", { runId });
+  return null;
+}
+
 export async function handleRunTask(
   deps: RunTaskDeps,
   { runId }: QueuedWork["run-task"],
@@ -202,12 +222,15 @@ export async function handleRunTask(
       createSandbox: () => deps.createSandbox({ kind: "run", runId }),
       emit,
       signal,
+      // The reaper keeps its work, as for a worker that died.
+      keepSandbox: () => lockLost(signal),
       deliver: async (changes, ran) => {
         await titling;
         return deliver(changes, ran);
       },
     });
   } catch (error) {
+    if (lockLost(signal)) return stoppedLost(deps, runId, sink);
     await record.fail({
       code: "worker_error",
       message: error instanceof Error ? error.message : String(error),
@@ -216,6 +239,7 @@ export async function handleRunTask(
   }
 
   await titling;
+  if (lockLost(signal)) return stoppedLost(deps, runId, sink);
   await endRun(deps, { id: runId, emit, record, sink }, result);
   if (result.setup?.health === "needs_attention") {
     await environments.markHealth(

@@ -19,6 +19,7 @@ import {
   dbEventRows,
   type Publisher,
 } from "../events/event-writer.js";
+import { LockLostError } from "../lib/lock-lost.js";
 import { fakeGithubApp } from "../testing/fake-github-app.js";
 import { createAnswerRouter } from "../onboardings/answer-router.js";
 import {
@@ -430,5 +431,22 @@ describe.skipIf(!database)("onboard-project handler against Postgres", () => {
     await handleOnboardProject(deps, { onboardingId }, stop.signal);
 
     expect((await findOnboarding(db, onboardingId))?.status).toBe("cancelled");
+  });
+
+  it("records nothing, leaving it to the reaper, when its queue lock was lost", async () => {
+    const { onboardingId } = await queuedSetup();
+    const { deps, published, logs } = depsFor();
+    const lost = new AbortController();
+    lost.abort(new LockLostError());
+
+    expect(
+      await handleOnboardProject(deps, { onboardingId }, lost.signal),
+    ).toBeNull();
+
+    expect((await findOnboarding(db, onboardingId))?.status).toBe("running");
+    expect(published.map((p) => p.message.type)).not.toContain("done");
+    expect(logs.map((l) => l.message)).toContain(
+      "Stopped a setup whose queue lock was lost",
+    );
   });
 });

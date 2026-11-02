@@ -19,6 +19,7 @@ import type {
 import type { EventWriter } from "../events/event-writer.js";
 import { createEventSink, onboardingEventTarget } from "../events/sink.js";
 import { GithubAccessError, repoReadToken } from "../github/repo-token.js";
+import { lockLost } from "../lib/lock-lost.js";
 import type { Log } from "../lib/log.js";
 import type { SandboxFactory } from "../lib/sandbox-factory.js";
 import type { AnswerRouter } from "../onboardings/answer-router.js";
@@ -57,7 +58,7 @@ export type OnboardProjectDeps = {
   maxDurationMs?: number;
 } & Pick<RunOnboardingOptions, "model" | "agentLimits">;
 
-/** Null when the setup was no longer queued (e.g. cancelled before it started). */
+/** Null when the setup was no longer queued (e.g. cancelled before it started), or its queue lock was lost. */
 export async function handleOnboardProject(
   deps: OnboardProjectDeps,
   { onboardingId }: QueuedWork["onboard-project"],
@@ -151,6 +152,14 @@ export async function handleOnboardProject(
     stopReceiving();
     signal?.removeEventListener("abort", stopped);
   });
+  // The queue gave the setup's lock away and the reaper ends it, so nothing is recorded here.
+  if (lockLost(signal)) {
+    await flush();
+    deps.log("warn", "Stopped a setup whose queue lock was lost", {
+      onboardingId,
+    });
+    return null;
+  }
 
   const saved =
     result.status === "approved" && result.config

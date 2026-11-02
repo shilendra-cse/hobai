@@ -17,6 +17,7 @@ import { FakeSandbox } from "@hobai/sandbox/testing";
 import type { EnvironmentConfig, RunEvent } from "@hobai/shared";
 import { asc, eq } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
+import { LockLostError } from "../lib/lock-lost.js";
 import { SHORT_NAME } from "@hobai/shared/brand";
 import {
   createEventWriter,
@@ -547,6 +548,61 @@ describe.skipIf(!database)("run-task handler against Postgres", () => {
     expect(await row(run.id)).toMatchObject({
       status: "running",
       startedAt: null,
+    });
+  });
+
+  describe("when stopped", () => {
+    const keptSandbox = () => {
+      const sandbox = fakeSandbox();
+      let destroyed = 0;
+      sandbox.destroy = async () => void (destroyed += 1);
+      return { sandbox, destroyed: () => destroyed };
+    };
+
+    it("ends as cancelled when you press Stop", async () => {
+      const { run, depsFor, published } = await setUp({
+        environment: environment(),
+      });
+      const { sandbox, destroyed } = keptSandbox();
+      const stop = new AbortController();
+      stop.abort();
+
+      const result = await handleRunTask(
+        depsFor([finish], sandbox).deps,
+        { runId: run.id },
+        stop.signal,
+      );
+
+      expect(result?.status).toBe("cancelled");
+      expect((await row(run.id)).status).toBe("cancelled");
+      expect(published.at(-1)).toMatchObject({
+        type: "done",
+        status: "cancelled",
+      });
+      expect(destroyed()).toBe(1);
+    });
+
+    it("records nothing and keeps the sandbox for the reaper when its queue lock was lost", async () => {
+      const { run, depsFor, published, logs, githubCalls } = await setUp({
+        environment: environment(),
+      });
+      const { sandbox, destroyed } = keptSandbox();
+      const lost = new AbortController();
+      lost.abort(new LockLostError());
+
+      const result = await handleRunTask(
+        depsFor([finish], sandbox).deps,
+        { runId: run.id },
+        lost.signal,
+      );
+
+      expect(result).toBeNull();
+      expect((await row(run.id)).status).toBe("running");
+      expect(published.map((e) => e.type)).not.toContain("done");
+      expect((await stored(run.id)).map((e) => e.type)).not.toContain("done");
+      expect(destroyed()).toBe(0);
+      expect(githubCalls).toEqual([]);
+      expect(logs).toContain("Stopped a run whose queue lock was lost");
     });
   });
 
