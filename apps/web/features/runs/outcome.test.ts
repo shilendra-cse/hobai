@@ -188,6 +188,8 @@ describe("runOutcome", () => {
 
     const headings: [string, string, string | null][] = [
       ["prepare_failed", "Couldn't prepare the sandbox", null],
+      ["sandbox_failed", "Couldn't prepare the sandbox", null],
+      ["sandbox_busy", "No sandbox was free", null],
       ["checkout_failed", "Couldn't prepare the sandbox", null],
       [
         "no_environment",
