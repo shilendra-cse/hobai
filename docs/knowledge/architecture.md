@@ -239,7 +239,7 @@ Removed from server: `WORKSPACES_ROOT`, `lib/workspaces.ts`, OAuth-token GitHub 
 |---|---|
 | Worker too slow to renew a lock | It stops the run at once, records nothing and keeps the sandbox; the reaper ends it as for a crash (next row). |
 | Worker crash mid-run | The item is failed when BullMQ detects it as stalled (its lock ran out: up to 2 minutes; `maxStalledCount: 0`, never retried). Within 5 minutes (or at the next worker start) the reaper saves the run's diff, parks its sandbox and fails the run with `worker_lost`. E2B and Docker sandboxes are deleted when parked; Daytona deletes a parked sandbox after `SANDBOX_RETENTION_HOURS`. |
-| Sandbox create fails | Retry with backoff (nothing has happened yet). |
+| Sandbox create fails | Refused for room (quota, rate limit): the worker waits and tries again, up to 10 minutes, then fails the run as `sandbox_busy` (§10 "Capacity"). Any other failure fails the run at once (`sandbox_failed`). Neither counts toward the user's runs. |
 | Dependency install fails | Continue; agent is told setup failed and may fix it. |
 | LLM error / rate limit | Backoff retry inside loop; fail after N attempts. |
 | User cancels | `POST /api/runs/:id/cancel`: a queued run is marked `cancelled` directly; a running one gets a `run-cancel` message → abort signal → sandbox destroyed → `cancelled`. |
@@ -342,16 +342,15 @@ How many runs execute at once is `WORKER_CONCURRENCY` per worker process (produc
 
 | Limit | Today | When exceeded |
 |---|---|---|
-| **E2B concurrency** (sandboxes running at once, for the account) | Hobby: **20**, whatever their size. A run holds one sandbox and a setup two at once (its tries, then a fresh one for the final check). Pro ($150/month) raises it to 100 | Creating the sandbox is refused: the run fails, "Couldn't prepare the sandbox" |
+| **E2B concurrency** (sandboxes running at once, for the account) | Hobby: **20**, whatever their size. A run holds one sandbox and a setup two at once (its tries, then a fresh one for the final check). Pro ($150/month) raises it to 100 | Creating the sandbox is refused. The run or setup waits for room (retried from 5 s, doubling to 60 s, up to 10 minutes, all counted in the run's 45-minute limit), then fails as `sandbox_busy`, "No sandbox was free" |
 | **The worker on the VPS** | Measured with the load harness: **planned at 600 runs per worker process**. 500 at once all succeed; 908 of 1,000 succeed on one process on the 2 vCPU / 8 GB VPS. Above that, the event loop is the limit, so scale with more processes ([worker-capacity.md](./worker-capacity.md) §5) | Slow event saving, then runs fail on database timeouts |
 | **OpenAI rate limit** (tokens per minute for the account's tier) | Not checked | Calls are retried, then the run fails |
 | **Daily spend cap** (`DAILY_SPEND_CAP_USD`, $5) | Roughly 10–25 runs a day | New tasks are refused with a clear message; nothing running fails |
 
-So `WORKER_CONCURRENCY=8` fits E2B's Hobby plan: at most 16 sandboxes, if all 8 slots were setups. (On Daytona it would need Tier 2 or higher: Tier 1's 10 vCPU and 10 GiB fit only 2 sandboxes.) Signs it needs changing: runs often sitting at "Queued" (raise it, within E2B's limit); "Couldn't prepare the sandbox" (lower it, or move to Pro).
+So `WORKER_CONCURRENCY=8` fits E2B's Hobby plan: at most 16 sandboxes, if all 8 slots were setups. (On Daytona it would need Tier 2 or higher: Tier 1's 10 vCPU and 10 GiB fit only 2 sandboxes.) Signs it needs changing: runs often sitting at "Queued" (raise it, within E2B's limit); "No sandbox room; waiting" in the worker's logs, or runs failing as `sandbox_busy` (lower it, or move to Pro).
 
 **Still to do:**
 - **Check the OpenAI tier's tokens per minute** against 8 agents at once.
-- **Wait instead of failing** when the provider refuses a sandbox for quota: today the run fails; it should go back to the queue or retry after a delay.
 
 **Local dev:** `docker-compose` (Postgres, Redis) · `pnpm dev:web` / `dev:server` / `dev:worker` · `SANDBOX_PROVIDER=docker` (or `e2b` / `daytona` on their free credit) · webhooks via smee.io or cloudflared tunnel.
 

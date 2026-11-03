@@ -24,6 +24,8 @@ export const PLATFORM_FAILURE_CODES = [
   "worker_lost",
   "stalled",
   "checkout_failed",
+  "sandbox_failed",
+  "sandbox_busy",
 ];
 
 /** The user's task runs in the cycle that count toward their plan's limit. */

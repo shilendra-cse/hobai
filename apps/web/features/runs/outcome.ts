@@ -52,6 +52,8 @@ const LIMITS: Record<string, string> = {
 
 const FAILURE_TITLES: Record<string, string> = {
   prepare_failed: "Couldn't prepare the sandbox",
+  sandbox_failed: "Couldn't prepare the sandbox",
+  sandbox_busy: "No sandbox was free",
   checkout_failed: "Couldn't prepare the sandbox",
   setup_failed: "Failed during setup",
   no_environment: "This project isn't set up",

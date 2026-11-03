@@ -143,7 +143,10 @@ export async function handleOnboardProject(
     model: deps.model,
     agentLimits: deps.agentLimits,
     createSandbox: () =>
-      deps.createSandbox({ kind: "onboarding", projectId: project.id }),
+      deps.createSandbox(
+        { kind: "onboarding", projectId: project.id },
+        stop.signal,
+      ),
     channel,
     autoApprove: true,
     emit: (event) => sink.emit(event),

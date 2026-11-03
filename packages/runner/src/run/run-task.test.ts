@@ -1,4 +1,5 @@
 import { scriptedModel } from "@hobai/agent/testing";
+import { SandboxBusyError } from "@hobai/sandbox";
 import { FakeSandbox } from "@hobai/sandbox/testing";
 import type { EnvironmentConfig, RunEvent } from "@hobai/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -160,6 +161,35 @@ describe("runTask", () => {
       failedStage: "sandbox",
       error: "Docker is not running",
     });
+  });
+
+  it("marks a run the provider had no sandbox room for", async () => {
+    const result = await runTask(
+      options(new FakeSandbox(), {
+        createSandbox: async () => {
+          throw new SandboxBusyError("All sandboxes were busy");
+        },
+      }),
+    );
+    expect(result).toMatchObject({
+      status: "failed",
+      failedStage: "sandbox",
+      sandboxBusy: true,
+    });
+  });
+
+  it("is cancelled when stopped while waiting for a sandbox", async () => {
+    const controller = new AbortController();
+    const result = await runTask(
+      options(new FakeSandbox(), {
+        signal: controller.signal,
+        createSandbox: async () => {
+          controller.abort();
+          throw new SandboxBusyError("All sandboxes were busy");
+        },
+      }),
+    );
+    expect(result.status).toBe("cancelled");
   });
 
   it("stops before any work when already cancelled, and keeps the sandbox on request", async () => {

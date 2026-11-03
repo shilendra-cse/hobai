@@ -7,10 +7,12 @@ import {
   DaytonaForbiddenError,
   DaytonaNotFoundError,
   DaytonaProcessExecutionTimeoutError,
+  DaytonaRateLimitError,
   type CreateSandboxFromSnapshotParams,
 } from "@daytonaio/sdk";
 import { SHORT_NAME } from "@hobai/shared/brand";
 import {
+  SandboxBusyError,
   SandboxCreateError,
   SandboxError,
   SandboxFileError,
@@ -96,6 +98,13 @@ const GONE_STATES = new Set(["destroyed", "destroying"]);
 const messageOf = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
+// Daytona answers a full CPU, memory or disk quota with a 403 ("Total CPU limit exceeded"), not a
+// 429, so it's told apart from a rejected key by its message.
+const isOverQuota = (error: unknown) =>
+  error instanceof DaytonaRateLimitError ||
+  (error instanceof DaytonaError &&
+    /limit exceeded|quota/i.test(error.message));
+
 function capped(text: string) {
   const buffer = new CappedBuffer(MAX_OUTPUT_BYTES);
   buffer.push(Buffer.from(text));
@@ -147,6 +156,11 @@ export class DaytonaSandbox implements Sandbox {
       );
       return new DaytonaSandbox(remote);
     } catch (error) {
+      if (isOverQuota(error)) {
+        throw new SandboxBusyError(
+          `Daytona has no room for another sandbox: ${messageOf(error)}`,
+        );
+      }
       if (
         error instanceof DaytonaAuthenticationError ||
         error instanceof DaytonaForbiddenError

@@ -220,7 +220,7 @@ export async function handleRunTask(
       model: deps.model,
       limits: deps.limits,
       environment: environment.config,
-      createSandbox: () => deps.createSandbox({ kind: "run", runId }),
+      createSandbox: () => deps.createSandbox({ kind: "run", runId }, signal),
       emit,
       signal,
       // The reaper keeps its work, as for a worker that died.

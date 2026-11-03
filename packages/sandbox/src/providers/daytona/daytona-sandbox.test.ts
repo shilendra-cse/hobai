@@ -2,12 +2,15 @@ import {
   DaytonaAuthenticationError,
   DaytonaError,
   DaytonaFileNotFoundError,
+  DaytonaForbiddenError,
   DaytonaNotFoundError,
   DaytonaProcessExecutionTimeoutError,
+  DaytonaRateLimitError,
 } from "@daytonaio/sdk";
 import { describe, expect, it } from "vitest";
 import { SHORT_NAME } from "@hobai/shared/brand";
 import {
+  SandboxBusyError,
   SandboxCreateError,
   SandboxFileError,
   SandboxGoneError,
@@ -136,6 +139,14 @@ describe("DaytonaSandbox.create", () => {
   it.each([
     [new DaytonaAuthenticationError("bad key", 401), SandboxUnavailableError],
     [new DaytonaError("no capacity", 503), SandboxCreateError],
+    [
+      new DaytonaForbiddenError(
+        "Total CPU limit exceeded. Maximum allowed: 10",
+        403,
+      ),
+      SandboxBusyError,
+    ],
+    [new DaytonaRateLimitError("Too many requests", 429), SandboxBusyError],
   ])("maps %s", async (error, expected) => {
     const client: DaytonaClient = {
       create: async () => {

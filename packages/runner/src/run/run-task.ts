@@ -6,7 +6,7 @@ import {
   type Emit,
   type ResolvedModel,
 } from "@hobai/agent";
-import { DockerSandbox, type Sandbox } from "@hobai/sandbox";
+import { DockerSandbox, SandboxBusyError, type Sandbox } from "@hobai/sandbox";
 import type { EnvironmentConfig, RunStage } from "@hobai/shared";
 import { collectDiff } from "../stages/changes/index.js";
 import { checkoutRepo, type RepoSource } from "../stages/checkout/index.js";
@@ -100,10 +100,13 @@ export async function runTask(options: RunTaskOptions): Promise<RunResult> {
     sandbox = await (options.createSandbox ?? (() => DockerSandbox.create()))();
   } catch (error) {
     clearTimeout(timer);
+    // Stopped while it waited for sandbox room.
+    if (signal?.aborted) return finish("cancelled");
     return {
       ...finish("failed"),
       failedStage: "sandbox",
       error: errorMessage(error),
+      ...(error instanceof SandboxBusyError && { sandboxBusy: true }),
     };
   }
   result.sandboxId = sandbox.id;

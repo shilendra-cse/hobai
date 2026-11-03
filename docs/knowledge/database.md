@@ -171,7 +171,7 @@ One agent execution.
 | `commit_sha` | text null | |
 | `checks_passed` | boolean null | lint + tests outcome |
 | `summary` | text null | agent's final summary; PR body and follow-up context |
-| `error_code` | text null | machine-readable, e.g. `checkout_failed`, `github_access`, `steps_limit`, `worker_lost`, `lost_in_queue` |
+| `error_code` | text null | machine-readable, e.g. `checkout_failed`, `sandbox_busy`, `github_access`, `steps_limit`, `worker_lost`, `lost_in_queue` |
 | `error_message` | text null | |
 | `input_tokens` | integer, default 0 | |
 | `output_tokens` | integer, default 0 | |

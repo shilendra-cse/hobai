@@ -3,6 +3,7 @@ import {
   CommandExitError,
   FileNotFoundError,
   InvalidArgumentError,
+  RateLimitError,
   Sandbox as E2B,
   SandboxError as E2BError,
   SandboxNotFoundError,
@@ -11,6 +12,7 @@ import {
   TimeoutError,
 } from "e2b";
 import {
+  SandboxBusyError,
   SandboxCreateError,
   SandboxError,
   SandboxFileError,
@@ -142,6 +144,12 @@ export class E2BSandbox implements Sandbox {
       if (error instanceof AuthenticationError) {
         throw new SandboxUnavailableError(
           `E2B rejected the API key: ${error.message}`,
+        );
+      }
+      // Also how E2B refuses a sandbox past the account's concurrency limit.
+      if (error instanceof RateLimitError) {
+        throw new SandboxBusyError(
+          `E2B has no room for another sandbox: ${error.message}`,
         );
       }
       throw new SandboxCreateError(
