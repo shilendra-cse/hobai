@@ -42,6 +42,12 @@ export function runFailure(result: RunResult): RunFailure | null {
         "Some checks didn't run: the run reached its time limit.",
     };
   }
+  if (result.sandboxBusy) {
+    return {
+      code: "sandbox_busy",
+      message: result.error ?? "No sandbox was free.",
+    };
+  }
   if (result.status === "failed") {
     return {
       code: `${result.failedStage ?? "agent"}_failed`,

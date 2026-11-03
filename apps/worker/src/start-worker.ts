@@ -16,6 +16,7 @@ import { handleOnboardProject } from "./handlers/onboard-project.js";
 import { handleRunTask } from "./handlers/run-task.js";
 import type { Log } from "./lib/log.js";
 import type { SandboxFactory } from "./lib/sandbox-factory.js";
+import { waitForSandboxRoom } from "./lib/wait-for-sandbox-room.js";
 import { createAnswerRouter } from "./onboardings/answer-router.js";
 import {
   createEventWriter,
@@ -86,9 +87,12 @@ export async function startWorker(
     log,
     model: model(overrides.taskModel),
     titleModel: model(overrides.titleModel),
-    createSandbox:
+    createSandbox: waitForSandboxRoom(
       overrides.createSandbox ??
-      ((labels: SandboxLabels) => createSandbox({ ...config.sandbox, labels })),
+        ((labels: SandboxLabels) =>
+          createSandbox({ ...config.sandbox, labels })),
+      { log },
+    ),
     github: overrides.github ?? createGithubApp(config.github),
     answers: createAnswerRouter(),
     answerTimeoutMs: config.answerTimeoutMs,
