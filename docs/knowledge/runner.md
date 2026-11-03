@@ -26,7 +26,7 @@ sandbox → checkout → setup → baseline → agent → verify → diff → (d
 
 `runTask()` never throws for run problems. It returns a `RunResult`: `status` (the agent's status, or `failed` with `failedStage` and `error` when an earlier stage broke), plus the checkout, setup, agent, verify and diff results that exist, and `delivery` (`branchName`, `sha`) when the changes were delivered. `checksPassed` is the verify outcome (`null` when there are no checks); failing checks don't change the agent's status.
 
-Events: `stage_changed` (prepare, checkout, setup, agent, verify, deliver), `sandbox_created`, the setup and agent events, and `checks_completed` (each check after the agent's work with its comparison) when verify ends. A delivery failure is `failedStage: "deliver"`.
+Events: `stage_changed` (prepare, checkout, setup, agent, verify, deliver), `sandbox_created`, the setup and agent events, and `checks_completed` (each check after the agent's work with its comparison) when verify ends. A delivery failure is `failedStage: "deliver"`. A sandbox the provider had no room for, even after the worker waited, is `failedStage: "sandbox"` with `sandboxBusy: true` (the worker records it as `sandbox_busy`); stopped while waiting, the run is `cancelled`.
 
 ```
 packages/runner/src/

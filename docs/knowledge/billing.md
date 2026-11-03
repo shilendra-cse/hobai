@@ -23,7 +23,7 @@ Limits live in data, not code: every user is on a **plan**, and the plan says wh
 - **Changing plan:** `pnpm admin:set-plan <email> <plan>` (by email, since accounts don't store the GitHub login; the author puts themself on `unlimited`); later the admin panel's button does the same. The cycle stays as it is.
 
 ### What counts as a run
-Every task run started in the current cycle, except those that failed through hobai's fault: `queue_unavailable`, `worker_error`, `worker_lost`, `stalled` and `checkout_failed`. Cancelled runs and runs where the agent failed count; they still cost. **Setups never count.** Usage isn't stored as a counter; it's counted from `runs`, so it can't drift.
+Every task run started in the current cycle, except those that failed through hobai's fault: `queue_unavailable`, `worker_error`, `worker_lost`, `stalled`, `checkout_failed`, `sandbox_failed` and `sandbox_busy` (no sandbox was free, even after waiting). Cancelled runs and runs where the agent failed count; they still cost. **Setups never count.** Usage isn't stored as a counter; it's counted from `runs`, so it can't drift.
 
 ### The limits
 Checked when a task starts (`POST /projects/:id/tasks`), together with creating the task, in one transaction locked per user, so two quick clicks can't both get through.
