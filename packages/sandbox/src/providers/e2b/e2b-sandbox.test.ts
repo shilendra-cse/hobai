@@ -3,6 +3,7 @@ import {
   CommandExitError,
   FileNotFoundError,
   InvalidArgumentError,
+  RateLimitError,
   SandboxError as E2BError,
   SandboxNotFoundError,
   SandboxNotRunningError,
@@ -12,6 +13,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { SHORT_NAME } from "@hobai/shared/brand";
 import {
+  SandboxBusyError,
   SandboxCreateError,
   SandboxFileError,
   SandboxGoneError,
@@ -128,6 +130,12 @@ describe("E2BSandbox.create", () => {
     [
       new AuthenticationError("Unauthorized, please check your credentials."),
       SandboxUnavailableError,
+    ],
+    [
+      new RateLimitError(
+        "Rate limit exceeded, please try again later - You have reached the maximum number of concurrent E2B sandboxes",
+      ),
+      SandboxBusyError,
     ],
     [
       new E2BError("400: Timeout cannot be greater than 1 hours"),
