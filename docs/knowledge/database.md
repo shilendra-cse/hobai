@@ -163,7 +163,7 @@ One agent execution.
 | `id` | uuid PK | also used as the BullMQ job id |
 | `task_id` | uuid FK → `tasks.id` | cascade |
 | `trigger` | enum `run_trigger` (`initial`, `follow_up`, `pr_comment`, `retry`) | |
-| `status` | enum `run_status` (`queued`, `running`, `succeeded`, `incomplete`, `failed`, `cancelled`) | |
+| `status` | enum `run_status` (`queued`, `running`, `succeeded`, `incomplete`, `failed`, `cancelled`) | the worker's final write (status, outcome, usage, error) is retried for up to 60 s |
 | `stage` | enum `run_stage` (`prepare`, `checkout`, `setup`, `agent`, `verify`, `deliver`) null | current pipeline stage, for UI |
 | `sandbox_id` | text null | Docker, E2B or Daytona id; the reaper reconnects to it when the run's worker is gone. Written, like `stage`, as the run goes; retried for up to 30 s, and one that still fails is logged rather than failing the run |
 | `environment_id` | uuid FK → `project_environments.id` null | the environment config version this run replayed; set null on delete |
@@ -221,7 +221,7 @@ One environment setup of a project, started from the website ([environment.md](.
 | `id` | uuid PK | |
 | `project_id` | uuid FK → `projects.id` | cascade |
 | `created_by_user_id` | text FK → `user.id` null | set null |
-| `status` | enum `onboarding_status` (`queued`, `running`, `waiting`, `succeeded`, `failed`, `cancelled`) | `waiting` while a question is open |
+| `status` | enum `onboarding_status` (`queued`, `running`, `waiting`, `succeeded`, `failed`, `cancelled`) | `waiting` while a question is open; the worker's final write is retried for up to 60 s, as for runs |
 | `error_code`, `error_message` | text null | e.g. `NO_ANSWER` |
 | `open_question_id` | text null | the question it's waiting on |
 | `environment_id` | uuid FK → `project_environments.id` null | the version it saved; set null |

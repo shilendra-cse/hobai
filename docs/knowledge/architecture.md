@@ -239,6 +239,7 @@ Removed from server: `WORKSPACES_ROOT`, `lib/workspaces.ts`, OAuth-token GitHub 
 |---|---|
 | Worker too slow to renew a lock | It stops the run at once, records nothing and keeps the sandbox; the reaper ends it as for a crash (next row). |
 | Worker crash mid-run | The item is failed when BullMQ detects it as stalled (its lock ran out: up to 2 minutes; `maxStalledCount: 0`, never retried). Within 5 minutes (or at the next worker start) the reaper saves the run's diff, parks its sandbox and fails the run with `worker_lost`. E2B and Docker sandboxes are deleted when parked; Daytona deletes a parked sandbox after `SANDBOX_RETENTION_HOURS`. |
+| Database write fails as a run or setup ends | The final result write is retried for up to 60 s on errors that can pass (no answer, connection, resources, shutdown, conflicts). Still failing, the job fails and the reaper ends the run (`worker_lost`), saving its diff first. |
 | Sandbox create fails | Refused for room (quota, rate limit): the worker waits and tries again, up to 10 minutes, then fails the run as `sandbox_busy` (§10 "Capacity"). Any other failure fails the run at once (`sandbox_failed`). Neither counts toward the user's runs. |
 | Dependency install fails | Continue; agent is told setup failed and may fix it. |
 | LLM error / rate limit | Backoff retry inside loop; fail after N attempts. |
@@ -277,7 +278,7 @@ Removed from server: `WORKSPACES_ROOT`, `lib/workspaces.ts`, OAuth-token GitHub 
 | web | Vercel | `/api/*` rewrite to the api (SSE buffering disabled) |
 | api | VPS, Coolify app (Docker) | public behind Coolify's proxy (Traefik, HTTPS); migrations run before it starts |
 | worker | VPS, Coolify app (Docker) | no public port; scale with BullMQ concurrency |
-| Postgres | Neon | managed, backups; the **direct** connection string for both apps and migrations: about 40 connections at most (a pool of 20 per app), well inside Neon's limit, and no pooler to work around |
+| Postgres | Neon | managed, backups; the **direct** connection string for both apps and migrations: about 40 connections at most (a pool of 20 per app), well inside Neon's limit, and no pooler to work around. A query waits up to 2 s for a free connection in the API, 10 s in the worker, whose event loop can be seconds behind under load |
 | Redis | Upstash | TCP over TLS (`rediss://`), which BullMQ and pub/sub need; eviction off (`noeviction`) so jobs are never dropped |
 | Sandboxes | E2B (`SANDBOX_PROVIDER=e2b`) | `hobai-base` template built by script (`pnpm sandbox:build-template`) |
 | GitHub App | GitHub | separate dev and prod Apps |
