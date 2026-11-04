@@ -23,21 +23,36 @@ export type RetryOptions = {
 const LONGEST_RETRY_MS = 5_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Runs `write`, retrying with growing waits while it fails in a way that passes. Null once done, else the error it gave up on. */
-export async function tryWithRetries(
-  write: () => Promise<unknown>,
+/** Runs `write`, retrying with growing waits while it fails in a way that passes; throws the error it gave up on. */
+export async function withRetries<T>(
+  write: () => Promise<T>,
   { retryForMs, firstRetryMs, onRetry }: RetryOptions,
-): Promise<unknown> {
+): Promise<T> {
   const started = Date.now();
   for (let wait = firstRetryMs; ; wait = Math.min(wait * 2, LONGEST_RETRY_MS)) {
     try {
-      await write();
-      return null;
+      return await write();
     } catch (error) {
       if (!isRetryable(error) || Date.now() - started + wait > retryForMs)
-        return error;
+        throw error;
       onRetry?.();
       await sleep(wait);
     }
   }
 }
+
+/** As `withRetries`, but never throws: null once done, else the error it gave up on. */
+export async function tryWithRetries(
+  write: () => Promise<unknown>,
+  options: RetryOptions,
+): Promise<unknown> {
+  try {
+    await withRetries(write, options);
+    return null;
+  } catch (error) {
+    return error;
+  }
+}
+
+/** How long a run's or setup's final write is retried: longer than progress, as it matters most. */
+export const END_RETRY_MS = 60_000;

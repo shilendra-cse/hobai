@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { tryWithRetries } from "./retry.js";
+import { tryWithRetries, withRetries } from "./retry.js";
 
 const noAnswer = () => new Error("timeout exceeded when trying to connect");
 const refused = () => Object.assign(new Error("refused"), { code: "23503" });
@@ -39,5 +39,30 @@ describe("tryWithRetries", () => {
       { retryForMs: 20, firstRetryMs: 5 },
     );
     expect(String(error)).toContain("timeout exceeded");
+  });
+});
+
+describe("withRetries", () => {
+  it("returns what the write returned once it works", async () => {
+    let calls = 0;
+    const value = await withRetries(
+      async () => {
+        if (++calls < 2) throw noAnswer();
+        return "saved";
+      },
+      { retryForMs: 1_000, firstRetryMs: 1 },
+    );
+    expect([value, calls]).toEqual(["saved", 2]);
+  });
+
+  it("throws the error it gave up on", async () => {
+    await expect(
+      withRetries(
+        async () => {
+          throw refused();
+        },
+        { retryForMs: 1_000, firstRetryMs: 1 },
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
   });
 });
