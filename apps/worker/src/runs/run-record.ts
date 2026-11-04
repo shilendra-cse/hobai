@@ -1,5 +1,6 @@
 import {
   markRunEnded,
+  type RunOutcome,
   markRunStarted,
   saveRunDiff,
   updateRunProgress,
@@ -10,7 +11,7 @@ import type { Diff, RunResult } from "@hobai/runner";
 import type { RunEvent } from "@hobai/shared";
 import { describeError } from "../lib/describe-error.js";
 import type { Log } from "../lib/log.js";
-import { tryWithRetries } from "../lib/retry.js";
+import { END_RETRY_MS, tryWithRetries, withRetries } from "../lib/retry.js";
 import { createSerialQueue } from "../lib/serial-queue.js";
 
 export class RunStateError extends Error {}
@@ -64,11 +65,14 @@ export function runFailure(result: RunResult): RunFailure | null {
 }
 
 type Progress = Parameters<typeof updateRunProgress>[2];
+type EndedFrom = Parameters<typeof markRunEnded>[3];
 
 export type RunRecordOptions = {
   log: Log;
   updateProgress?: (progress: Progress) => Promise<void>;
+  markEnded?: (outcome: RunOutcome, from: EndedFrom) => Promise<boolean>;
   retryForMs?: number;
+  endRetryForMs?: number;
   firstRetryMs?: number;
 };
 
@@ -100,6 +104,16 @@ export function createRunRecord(
         });
       }
     });
+  const write =
+    options.markEnded ??
+    ((outcome: RunOutcome, from: EndedFrom) =>
+      markRunEnded(db, runId, outcome, from));
+  // Its result unsaved, a finished run would be ended by the reaper as if its worker had died.
+  const markEnded = (outcome: RunOutcome, from: EndedFrom) =>
+    withRetries(() => write(outcome, from), {
+      retryForMs: options.endRetryForMs ?? END_RETRY_MS,
+      firstRetryMs: options.firstRetryMs ?? 250,
+    });
   const extra = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
 
   return {
@@ -128,9 +142,7 @@ export function createRunRecord(
     finish(result) {
       const agent = result.agent;
       const failure = runFailure(result);
-      return markRunEnded(
-        db,
-        runId,
+      return markEnded(
         {
           status: result.status,
           summary: agent?.summary ?? null,
@@ -151,9 +163,7 @@ export function createRunRecord(
       saveRunDiff(db, runId, { patch, files, truncated }),
 
     fail(failure) {
-      return markRunEnded(
-        db,
-        runId,
+      return markEnded(
         {
           status: "failed",
           errorCode: failure.code,

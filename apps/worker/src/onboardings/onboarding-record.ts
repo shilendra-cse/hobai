@@ -8,6 +8,7 @@ import {
 } from "@hobai/db";
 import type { OnboardingResult } from "@hobai/runner";
 import type { OnboardingEndStatus } from "@hobai/shared";
+import { END_RETRY_MS, withRetries } from "../lib/retry.js";
 
 export type OnboardingFailure = { code: string; message: string };
 
@@ -42,17 +43,35 @@ export function onboardingOutcome(
 
 export type OnboardingRecord = ReturnType<typeof createOnboardingRecord>;
 
-export function createOnboardingRecord(db: Db, onboardingId: string) {
+export type OnboardingRecordOptions = {
+  markEnded?: (outcome: OnboardingOutcome) => Promise<boolean>;
+  endRetryForMs?: number;
+  firstRetryMs?: number;
+};
+
+export function createOnboardingRecord(
+  db: Db,
+  onboardingId: string,
+  options: OnboardingRecordOptions = {},
+) {
+  const write =
+    options.markEnded ??
+    ((outcome: OnboardingOutcome) =>
+      markOnboardingEnded(db, onboardingId, outcome));
+  const markEnded = (outcome: OnboardingOutcome) =>
+    withRetries(() => write(outcome), {
+      retryForMs: options.endRetryForMs ?? END_RETRY_MS,
+      firstRetryMs: options.firstRetryMs ?? 250,
+    });
   return {
     /** False when the setup isn't queued any more (e.g. it was cancelled first). */
     start: () => markOnboardingStarted(db, onboardingId),
     waiting: (questionId: string) =>
       markOnboardingWaiting(db, onboardingId, questionId),
     resumed: () => markOnboardingResumed(db, onboardingId),
-    finish: (outcome: EndedOnboarding) =>
-      markOnboardingEnded(db, onboardingId, outcome),
+    finish: (outcome: EndedOnboarding) => markEnded(outcome),
     fail: (failure: OnboardingFailure) =>
-      markOnboardingEnded(db, onboardingId, {
+      markEnded({
         status: "failed",
         errorCode: failure.code,
         errorMessage: failure.message,

@@ -51,7 +51,11 @@ export async function startWorker(
   log: Log,
   overrides: WorkerOverrides = {},
 ): Promise<RunningWorker> {
-  const { db, pool } = createDb(config.databaseUrl);
+  // Longer than the API's 2 s: a worker whose event loop is seconds behind notices a free
+  // connection late, and its queries would time out waiting for one.
+  const { db, pool } = createDb(config.databaseUrl, {
+    connectionTimeoutMillis: 10_000,
+  });
   // Without a listener, an idle connection dropping (e.g. Postgres restarting) crashes the process.
   pool.on("error", (error) =>
     log("error", "Database connection error", { error: error.message }),
