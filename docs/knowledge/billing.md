@@ -1,6 +1,6 @@
 # Plans & Billing
 
-> Status: **Accepted** · Last updated: 2026-10-30 · Related: [requirements.md](./requirements.md), [development-plan.md](./development-plan.md), [database.md](./database.md) (`plans`, `subscriptions`), [api.md](./api.md), [ui.md](./ui.md) (pricing page, usage)
+> Status: **Accepted** (§1–6) · §7 is a **draft under discussion** · Last updated: 2026-11-05 · Related: [requirements.md](./requirements.md), [development-plan.md](./development-plan.md), [database.md](./database.md) (`plans`, `subscriptions`), [api.md](./api.md), [ui.md](./ui.md) (pricing page, usage)
 
 ## 1. MVP: free tier only
 
@@ -43,7 +43,7 @@ The daily cap is also checked when a setup starts, since setups spend too. It pr
 
 - **Subscription:** a fixed monthly price, starting at **₹599** (incl. GST), with higher tiers above it. It pays for infra and includes credits.
 - **Top-ups:** more credits when the included ones run out. Priced at cost or slightly above (payment fees, GST, exchange rate); they pay for usage, not infra.
-- **Model choice:** per run, any model in the catalog. Plans differ by price and included credits, never by which models they unlock.
+- **Model choice:** per run, any model in the catalog. Plans differ by price and included credits, never by which models they unlock. *Under review: §7 replaces model choice with modes and routing.*
 - Exact tiers and credit amounts are set from measured run costs.
 
 ## 4. Credits
@@ -63,7 +63,7 @@ Users see credits, never rupees, inside the product. The pricing page also shows
 ## 5. Decided against
 
 - **Bring your own API key:** not a SaaS model, and the sandbox and infra are ours anyway.
-- **Model tiers as plans** (fast / balanced / best): the model is a choice per run, not something a plan unlocks.
+- **Model tiers as plans** (fast / balanced / best): the model is a choice per run, not something a plan unlocks. *Under review: §7 has plans unlock modes.*
 - **Plan price = credits at cost** (e.g. ₹599 buys ₹599 of usage): no margin left for infra.
 - **A list of unlimited users in an env setting:** plans in the database do the same, and the admin panel can change them.
 - **Calendar-month resets:** each user's cycle runs from their own start date, as a subscription would.
@@ -75,3 +75,32 @@ For the operator, not users: every user, plan and number in one place, built on 
 - **Plans:** create and edit limits (and, with Pro, price and credits).
 - **Statistics:** runs, setups, cost, tokens, durations and outcomes, overall and per user, from `runs` and `onboardings`; the daily spend against the cap.
 - **Access:** a `role` on the user (`admin`). Better Auth's admin plugin gives roles, banning and user listing, so those aren't built from scratch.
+
+## 7. Draft: modes, routing and credits (under discussion, not final)
+
+Brainstormed 2026-11-05. Nothing here is built or decided; it replaces parts of §3–5 only once agreed.
+
+### Modes
+The user picks a **mode** for a run: **Optimized**, **Balanced** or **High**. The **plan decides which modes a user can pick** (e.g. a cheaper plan only Optimized, higher plans add Balanced and High).
+
+### Routing
+- A **classifier LLM** (a cheap model) runs before every run, after checkout. It looks at the task and the repo, and picks a **model category**, not a model by name.
+- Being an LLM, it can reason, use read-only tools to look around the repo, and judge things the task text doesn't say (how messy the code is, how big the files are, how the tests look).
+- **Categories map to real models in our own table** (e.g. *Fast*, *Standard*, *Deep*), so models can be swapped without changing the classifier.
+- **The mode has a say, but doesn't decide alone.** It's an input to the classifier: Optimized leans to cost, High leans to quality. The task still decides: High + "add a comment" runs on a cheap category; Optimized + a large refactor can go higher.
+- **No hard ceiling:** the classifier may pick a category above what the user's mode or plan normally reaches when the task needs it.
+- Idea, not agreed: the classifier hands its findings (files involved, where to start) to the main agent, so the main agent explores less.
+- A dedicated classifier (TypeSafe's Jev) was considered. A cheap LLM was preferred: reasoning, tool calls, the reason for each choice in the logs, and no new vendor seeing users' code.
+
+### Credits and margin (working assumptions)
+- A run uses credits by its real cost (AI + sandbox), so the model, mode and task size all change how many credits a run uses.
+- Target ~70% margin at **typical** use: a user who uses every credit roughly breaks even; most users use part of their allowance. Margin is measured after GST and payment fees.
+- Rough sizing, from estimates only: Pro ₹599 ≈ 500 credits, Plus ₹1,499 ≈ 1,250 credits. A run on a cheap model is ~₹5 of real cost, on a strong model ~₹50–100 (assumed ~500K input tokens, 70% cached, 20K output).
+- Per-run credit cap, cost shown per mode before a run, low-balance warning: discussed, not decided.
+
+### Open, to discuss
+- What the classifier sees, and its limits (steps, tools, tokens).
+- The categories, and which models sit in each.
+- What happens without a hard ceiling: does a run above the plan's usual category use more credits, or does hobai absorb it?
+- Which modes each plan unlocks; plan prices and credit amounts.
+- Real cost per run and solve rate per model, from usage tracking and an eval run on candidate models.
