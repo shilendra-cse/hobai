@@ -15,7 +15,7 @@ No payment setup in the MVP. Limits are enforced when a task is created and reje
 
 ## 2. Plans, subscriptions and limits
 
-Limits live in data, not code: every user is on a **plan**, and the plan says what's allowed. The free tier, the author's own access and later Pro tiers are all rows, so changing one never needs a deploy, and the admin panel (§6) edits the same rows.
+Limits live in data, not code: every user is on a **plan**, and the plan says what's allowed. The free tier, the author's own access and later Pro tiers are all rows, so changing one never needs a deploy, and the admin panel (§7) edits the same rows.
 
 - **Plan** (`plans`): a slug, a name, and its limits: runs per cycle (`null` = no limit) and concurrent runs. Seeded with `free` (10 runs, 1 at a time) and `unlimited` (no run limit, 3 at a time; internal, for the author). Paid plans add a price, included credits and the modes they unlock (§3).
 - **Subscription** (`subscriptions`): which plan a user is on, and their current cycle (`period_start`, `period_end`). Every user is on `free` from signup: the subscription is created the first time it's needed (`ensureSubscription`), its cycles counted from the user's `created_at`, so existing users need no backfill. `source` says how they got it: `signup`, `admin`, later `payment`.
@@ -112,7 +112,7 @@ A cheap LLM (GPT-6 Luna to start) runs before every run, after checkout, and **p
 - **A list of unlimited users in an env setting:** plans in the database do the same, and the admin panel can change them.
 - **Calendar-month resets:** each user's cycle runs from their own start date, as a subscription would.
 
-## 7. Admin panel (after launch)
+## 7. Admin panel (build step 2)
 
 For the operator, not users: every user, plan and number in one place, built on the tables above and what runs already record.
 - **Users:** list and search, each with their plan, cycle and usage; change plan (writes the subscription with `source = admin`); ban.
@@ -130,14 +130,15 @@ For the operator, not users: every user, plan and number in one place, built on 
 | # | Piece | What it delivers | Needs |
 |---|---|---|---|
 | 1 | Usage tracking | Per run and setup, per user: model, tokens (incl. cached), model cost, sandbox time and size, outcome. Survives deleting a project or task. Nothing visible to users. | — |
-| 2 | More model providers | The catalog runs models through OpenRouter, each with its own price. | — |
-| 3 | Eval on the candidates | §5's models on hobai's eval tasks: solve rate, cost, time. The first model facts for the judge. | 1, 2 |
-| 4 | Judge, shadow mode | The judge records its choice and reasoning; runs still use Luna. | 1, 3 |
-| 5 | Judge live + modes | Its choice is used, with backup fallback; users pick a mode; its track record feeds back. | 4 |
-| 6 | Credits and plans | Credits per run and setup from usage; a balance per cycle; plans get price, credits and modes; refused when out of credits. | 1, 5 |
-| 7 | Credits instead of cost for users | Run cards, live events and the API show credits; `cost_usd` no longer reaches users. | 6 |
-| 8 | Payments (Dodo) | Checkout, plan switching, renewals, failed payments. | 6 |
-| 9 | Billing page | Plan, credits left, upgrade, receipts. | 6, 8 |
-| After launch | Top-ups, admin panel (§7) | | 6, 8 |
+| 2 | Admin panel (§7) | Every user, their plan and usage in one place, from usage tracking's data. | 1 |
+| 3 | More model providers | The catalog runs models through OpenRouter, each with its own price. | — |
+| 4 | Eval on the candidates | §5's models on hobai's eval tasks: solve rate, cost, time. The first model facts for the judge. | 1, 3 |
+| 5 | Judge, shadow mode | The judge records its choice and reasoning; runs still use Luna. | 1, 4 |
+| 6 | Judge live + modes | Its choice is used, with backup fallback; users pick a mode; its track record feeds back. | 5 |
+| 7 | Credits and plans | Credits per run and setup from usage; a balance per cycle; plans get price, credits and modes; refused when out of credits. | 1, 6 |
+| 8 | Credits instead of cost for users | Run cards, live events and the API show credits; `cost_usd` no longer reaches users. | 7 |
+| 9 | Payments (Dodo) | Checkout, plan switching, renewals, failed payments. | 7 |
+| 10 | Billing page | Plan, credits left, upgrade, receipts. | 7, 9 |
+| After launch | Top-ups; account deletion as a soft delete (`user.deleted_at`, sessions revoked, personal details scrubbed; usage and payment history stay) | | 7, 9 |
 
-Users can pay once 9 is done. 1 and 2 can be built side by side.
+Users can pay once 10 is done. 1 and 3 can be built side by side.
